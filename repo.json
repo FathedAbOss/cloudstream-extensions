@@ -1,0 +1,8 @@
+{
+    "name": "FathedAbOss CloudStream Extensions",
+    "description": "Custom extensions for CloudStream by FathedAbOss",
+    "manifestVersion": 1,
+    "pluginLists": [
+          "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/plugins.json"
+    ]
+}
