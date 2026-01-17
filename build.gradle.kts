@@ -65,7 +65,7 @@ subprojects {
     }
 
     dependencies {
-        val cloudstream_version = "3.0.0"
-        compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
+        val cloudstream_version = "master-SNAPSHOT"
+        add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
     }
 }
