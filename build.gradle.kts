@@ -66,6 +66,8 @@ subprojects {
 
     dependencies {
         val cloudstream_version = "3.0.0"
-        "compileOnly"("com.lagradost:cloudstream3:$cloudstream_version")
+        configurations.getByName("compileOnly").dependencies.add(
+            project.dependencies.create("com.lagradost:cloudstream3:$cloudstream_version")
+        )
     }
 }
