@@ -1,0 +1,18 @@
+package com.example
+
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.TvType
+
+class JustWatchProvider : MainAPI() {
+      override var mainUrl = "https://www.justwatch.com/eg"
+      override var name = "JustWatch EG"
+      override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+          override var lang = "ar"
+      override var hasMainPage = true
+
+      override suspend fun search(query: String): List<SearchResponse> {
+                // Scraper logic will be implemented here
+                return listOf()
+      }
+}
