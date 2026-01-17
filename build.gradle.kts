@@ -40,9 +40,10 @@ subprojects {
 
     android {
         namespace = "com.fathedaboss.${project.name.lowercase()}"
+        compileSdkVersion(35)
+
         defaultConfig {
             minSdk = 21
-            compileSdkVersion(35)
             targetSdk = 35
         }
 
@@ -50,21 +51,21 @@ subprojects {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
         }
+    }
 
-        tasks.withType<KotlinJvmCompile> {
-            compilerOptions {
-                jvmTarget.set(JvmTarget.JVM_1_8)
-                freeCompilerArgs.addAll(
-                    "-Xno-call-assertions",
-                    "-Xno-param-assertions",
-                    "-Xno-receiver-assertions"
-                )
-            }
+    tasks.withType<KotlinJvmCompile> {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_1_8)
+            freeCompilerArgs.addAll(
+                "-Xno-call-assertions",
+                "-Xno-param-assertions",
+                "-Xno-receiver-assertions"
+            )
         }
     }
 
     dependencies {
         val cloudstream_version = "3.0.0"
-        compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
+        add("compileOnly", "com.lagradost:cloudstream3:$cloudstream_version")
     }
 }
