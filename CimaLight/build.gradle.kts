@@ -32,16 +32,14 @@ version = 1
 
 cloudstream {
     language = "ar"
-    description = "CimaLight placeholder provider"
+    description = "CimaLight provider"
     authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
-}
 
-dependencies {
-    val cloudstream_version = "4.1.1"
-    compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
+    setPackage("com.example")
+    setProviderClass("CimaLightProvider")
 }
 
 setPackage("com.example")
