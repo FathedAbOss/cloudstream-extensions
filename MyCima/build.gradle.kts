@@ -28,11 +28,22 @@ android {
     }
 }
 
+// Use an integer for version numbers
+version = 1
+
 cloudstream {
     // Set the package name of your provider
     setPackage("com.example")
     // Set the class name of your provider
     setProviderClass("MyCimaProvider")
+
+    // Plugin metadata
+    description = "MyCima placeholder provider"
+    authors = listOf("FathedAbOss")
+    status = 1
+    language = "ar"
+    tvTypes = listOf("Movie", "TvSeries")
+    iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
 }
 
 dependencies {
