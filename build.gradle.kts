@@ -66,7 +66,6 @@ subprojects {
 
     dependencies {
         val cloudstream_version = "master-SNAPSHOT"
-        add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
+        // add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
     }
 }
-
