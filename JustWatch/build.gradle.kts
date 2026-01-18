@@ -32,11 +32,14 @@ version = 1
 
 cloudstream {
     language = "ar"
-    description = "JustWatch placeholder provider"
+    description = "JustWatch provider"
     authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
+
+    setPackage("com.example")
+    setProviderClass("JustWatchProvider")
 }
 
 dependencies {
