@@ -23,19 +23,28 @@ android {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "17"
-            freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all"
+            freeCompilerArgs += "-Xjvm-default=all"
         }
     }
 }
 
+// Plugin version number
+version = 1
+
+// Cloudstream plugin metadata
 cloudstream {
-    // Set the package name of your provider
-    setPackage("com.example")
-    // Set the class name of your provider
-    setProviderClass("YallaCimaProvider")
+    language = "ar"  // Arabic
+    description = "YallaCima placeholder provider"
+    authors = listOf("FathedAbOss")
+    status = 1
+    tvTypes = listOf("Movie", "TvSeries")
+    iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
 }
 
 dependencies {
-    val cloudstream_version = "3.0.0"
+    val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
+
+setPackage("com.example")
+setProviderClass("YallaCimaProvider")
