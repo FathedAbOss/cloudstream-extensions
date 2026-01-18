@@ -23,25 +23,25 @@ android {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "17"
-            freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all"
+            freeCompilerArgs += "-Xjvm-default=all"
         }
     }
 }
 
+version = 1
+
 cloudstream {
     language = "ar"
-    version = 1
     description = "ElCinema placeholder provider"
     authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
+    setPackage("com.example")
+    setProviderClass("ElCinemaProvider")
 }
 
 dependencies {
-    val cloudstream_version = "3.0.0"
+    val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
-
-setPackage("com.example")
-setProviderClass("ElCinemaProvider")
