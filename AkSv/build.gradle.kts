@@ -36,6 +36,8 @@ cloudstream {
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/46f9e36ae0c6b29f012334583b3b57c543f714e1/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
+    setPackage("com.example")
+    setProviderClass("AkSvProvider")
 }
 
 dependencies {
@@ -43,5 +45,5 @@ dependencies {
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
 
-setPackage("com.example")
+
 setProviderClass("AkSvProvider")
