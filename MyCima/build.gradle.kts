@@ -23,30 +23,25 @@ android {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "17"
-            freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all"
+            freeCompilerArgs += "-Xjvm-default=all"
         }
     }
 }
 
-// Use an integer for version numbers
 version = 1
 
 cloudstream {
-    // Set the package name of your provider
-    setPackage("com.example")
-    // Set the class name of your provider
-    setProviderClass("MyCimaProvider")
-
-    // Plugin metadata
+    language = "ar"
     description = "MyCima placeholder provider"
     authors = listOf("FathedAbOss")
     status = 1
-    language = "ar"
     tvTypes = listOf("Movie", "TvSeries")
-    iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
+    iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
+    setPackage("com.example")
+    setProviderClass("MyCimaProvider")
 }
 
 dependencies {
-    val cloudstream_version = "3.0.0"
+    val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
