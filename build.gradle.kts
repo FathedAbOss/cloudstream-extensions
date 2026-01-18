@@ -7,12 +7,12 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
+        maven("https://jitpack.io" )
     }
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
+        classpath("com.github.recloudstream.gradle:master-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
     }
 }
@@ -21,7 +21,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
+        maven("https://jitpack.io" )
     }
 }
 
@@ -39,7 +39,7 @@ subprojects {
     }
 
     android {
-        namespace = "com.fathedaboss.${project.name.lowercase()}"
+        namespace = "com.fathedaboss.\${project.name.lowercase()}"
         compileSdkVersion(35)
 
         defaultConfig {
@@ -66,6 +66,12 @@ subprojects {
 
     dependencies {
         val cloudstream_version = "master-SNAPSHOT"
-        // add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
+        compileOnly("com.github.recloudstream:cloudstream3:\$cloudstream_version")
+        implementation("org.jsoup:jsoup:1.15.3")
+        implementation("com.github.recloudstream:nicehttp:master-SNAPSHOT" )
     }
+}
+
+dependencies {
+    val cloudstream_version = "master-SNAPSHOT"
 }
