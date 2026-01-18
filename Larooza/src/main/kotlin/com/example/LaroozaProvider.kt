@@ -1,18 +1,37 @@
 package com.example
 
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
 
 class LaroozaProvider : MainAPI() {
-      override var mainUrl = "https://larooza.hair"
-      override var name = "Larooza"
-      override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-          override var lang = "ar"
-      override var hasMainPage = true
+    override var mainUrl = "https://larooza.hair/"
+    override var name = "Larooza"
+    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries )
+    override var lang = "ar"
+    override var hasMainPage = true
 
-      override suspend fun search(query: String): List<SearchResponse> {
-                // Scraper logic will be implemented here
-                return listOf()
-      }
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(mainUrl).document
+        val items = document.select("div.video-box").mapNotNull { it.toSearchResult() }
+        return newHomePageResponse(request.name, items)
+    }
+
+    private fun Element.toSearchResult(): SearchResponse? {
+        val title = this.selectFirst(".video-title")?.text() ?: return null
+        val href = this.selectFirst("a")?.attr("href") ?: return null
+        val posterUrl = this.selectFirst("img")?.attr("src")
+        return newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val document = app.get("$mainUrl/?s=$query").document
+        return document.select("div.video-box").mapNotNull { it.toSearchResult() }
+    }
+
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+        val title = document.selectFirst("h1")?.text() ?: ""
+        return newMovieLoadResponse(title, url, TvType.Movie, url)
+    }
 }
