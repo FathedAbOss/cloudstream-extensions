@@ -28,23 +28,20 @@ android {
     }
 }
 
-// Plugin version number
 version = 1
 
-// Cloudstream plugin metadata
 cloudstream {
-    language = "ar"  // Arabic
+    language = "ar"
     description = "YallaCima placeholder provider"
     authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
+    setPackage("com.example")
+    setProviderClass("YallaCimaProvider")
 }
 
 dependencies {
     val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
-
-setPackage("com.example")
-setProviderClass("YallaCimaProvider")
