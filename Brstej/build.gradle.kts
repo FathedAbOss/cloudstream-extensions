@@ -29,13 +29,19 @@ android {
 }
 
 cloudstream {
-    // Set the package name of your provider
-    setPackage("com.example")
-    // Set the class name of your provider
-    setProviderClass("BrstejProvider")
+    language = "ar"
+    version = 1
+    description = "Brstej placeholder provider"
+    authors = listOf("FathedAbOss")
+    status = 1
+    tvTypes = listOf("Movie", "TvSeries")
+    iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/46f9e36ae0c6b29f012334583b3b57c543f714e1/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
 }
 
 dependencies {
     val cloudstream_version = "3.0.0"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
+
+setPackage("com.example")
+setProviderClass("BrstejProvider")
