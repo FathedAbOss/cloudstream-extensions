@@ -32,12 +32,16 @@ version = 1
 
 cloudstream {
     language = "ar"
-    description = "AkSv placeholder provider"
+    description = "AkSv provider"
     authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
+
+    setPackage("com.example")
+    setProviderClass("AkSvProvider")
 }
+
 
 dependencies {
     val cloudstream_version = "4.1.1"
