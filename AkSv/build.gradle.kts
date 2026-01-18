@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example"
+    namespace = "com.example" 
     compileSdk = 33
 
     defaultConfig {
@@ -20,14 +20,14 @@ android {
     }
 
     tasks.withType<KotlinCompile> {
-        kotlinOptions {
-            jvmTarget = "17"
-            freeCompilerArgs += "-Xjvm-default=all"
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            freeCompilerArgs.add("-Xjvm-default=all") 
         }
     }
 }
 
-version = 1
+version = "1.0.0"
 
 cloudstream {
     language = "ar"
