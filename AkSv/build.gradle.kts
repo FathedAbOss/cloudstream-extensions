@@ -1,4 +1,3 @@
-import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
@@ -43,6 +42,3 @@ dependencies {
     val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
-
-setPackage("com.example")
-setProviderClass("AkSvProvider")
