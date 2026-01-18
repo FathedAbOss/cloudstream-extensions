@@ -1,4 +1,3 @@
-import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
@@ -37,15 +36,9 @@ cloudstream {
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
-
-    setPackage("com.example")
-    setProviderClass("JustWatchProvider")
 }
 
 dependencies {
     val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
-
-setPackage("com.example")
-setProviderClass("JustWatchProvider")
