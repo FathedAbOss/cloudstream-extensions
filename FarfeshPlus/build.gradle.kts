@@ -39,6 +39,5 @@ cloudstream {
 }
 
 dependencies {
-    val cloudstream_version = "4.1.1"
-    compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
+    apk("com.lagradost:cloudstream3:pre-release")
 }
