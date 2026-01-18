@@ -48,6 +48,5 @@ dependencies {
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
 
-// these must be outside the cloudstream block
 setPackage("com.example")
 setProviderClass("AkSvProvider")
