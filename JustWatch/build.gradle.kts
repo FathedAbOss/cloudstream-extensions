@@ -23,16 +23,17 @@ android {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "17"
-            freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all"
+            freeCompilerArgs += "-Xjvm-default=all"
         }
     }
 }
 
 version = 1
-   cloudstream {
+
+cloudstream {
     language = "ar"
     description = "JustWatch placeholder provider"
-       authors = listOf("FathedAbOss")
+    authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
@@ -41,6 +42,6 @@ version = 1
 }
 
 dependencies {
-    val cloudstream_version = "3.0.0"
+    val cloudstream_version = "4.1.1"
     compileOnly("com.lagradost:cloudstream3:$cloudstream_version")
 }
