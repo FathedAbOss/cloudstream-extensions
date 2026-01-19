@@ -66,8 +66,7 @@ subprojects {
 
     dependencies {
         val cloudstream_version = "master-SNAPSHOT"
-        compileOnly("com.github.recloudstream:cloudstream3:$cloudstream_version")
-        implementation("org.jsoup:jsoup:1.15.3")
-        implementation("com.github.recloudstream:nicehttp:master-SNAPSHOT")
+        add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
+        add("implementation", "org.jsoup:jsoup:1.15.3")
     }
 }
