@@ -3,14 +3,12 @@ import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
-
 buildscript {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io" )
+        maven("https://jitpack.io")
     }
-
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
@@ -19,50 +17,41 @@ buildscript {
     }
 }
 
-
 allprojects {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io" )
+        maven("https://jitpack.io")
     }
 }
 
-
 fun Project.cloudstream(configuration: CloudstreamExtension.() -> Unit) = extensions.getByName<CloudstreamExtension>("cloudstream").configuration()
 
-
 fun Project.android(configuration: BaseExtension.() -> Unit) = extensions.getByName<BaseExtension>("android").configuration()
-
 
 subprojects {
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-
     cloudstream {
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "FathedAbOss/cloudstream-extensions")
     }
 
-
     android {
-        namespace = "com.fathedaboss.\${project.name.lowercase()}"
+        namespace = "com.fathedaboss.${project.name.lowercase()}"
         compileSdkVersion(35)
-
 
         defaultConfig {
             minSdk = 21
             targetSdk = 35
         }
 
-
         compileOptions {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
         }
     }
-
 
     tasks.withType<KotlinJvmCompile> {
         compilerOptions {
@@ -75,8 +64,10 @@ subprojects {
         }
     }
 
-
     dependencies {
         val cloudstream_version = "master-SNAPSHOT"
-        compileOnly("com.github.recloudstream:cloudstream3:\$cloudstream_version")
+        compileOnly("com.github.recloudstream:cloudstream3:$cloudstream_version")
         implementation("org.jsoup:jsoup:1.15.3")
+        implementation("com.github.recloudstream:nicehttp:master-SNAPSHOT")
+    }
+}
