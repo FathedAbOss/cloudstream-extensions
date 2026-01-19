@@ -66,7 +66,8 @@ subprojects {
 
     dependencies {
         val cloudstream_version = "master-SNAPSHOT"
-        add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
+        // Correct artifact name matches the repo name: 'cloudstream'
+        add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
         add("implementation", "org.jsoup:jsoup:1.15.3")
     }
 }
