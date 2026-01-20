@@ -26,6 +26,8 @@ jobs:
         with:
           ref: "builds"
           path: "builds"
+          # We need to fetch the builds branch to commit to it later.
+          # This is a common pattern for hosting build artifacts on a separate branch.
 
       - name: Clean old builds
         run: rm -rf $GITHUB_WORKSPACE/builds/*.cs3
@@ -41,7 +43,11 @@ jobs:
       - name: Build Plugins
         run: |
           chmod +x gradlew
+          # The makePluginsJson task is crucial for generating the correct plugins.json
+          # with the correct URLs (pointing to the 'builds' branch raw content).
           ./gradlew make makePluginsJson
+
+          # Copy the generated .cs3 files and plugins.json to the 'builds' directory
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
           cp build/plugins.json $GITHUB_WORKSPACE/builds
 
@@ -51,5 +57,7 @@ jobs:
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .
-          git commit --amend -m "Build $GITHUB_SHA" || exit 0 # do not error if nothing to commit
-          git push --force
+          # Use --allow-empty to ensure the commit succeeds even if no files changed
+          git commit -m "Build $GITHUB_SHA" --allow-empty || exit 0
+          # Explicitly push to the 'builds' branch
+          git push origin HEAD:builds --force
