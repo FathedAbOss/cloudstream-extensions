@@ -68,4 +68,7 @@ subprojects {
         // Correct artifact name matches the repo name: 'cloudstream'
        add("implementation", "com.github.recloudstream.cloudstream:library:-SNAPSHOT")
     add("implementation", "org.jsoup:jsoup:1.15.3")
+    }
+}
+
        
