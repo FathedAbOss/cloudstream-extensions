@@ -2,7 +2,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("com.android.library")
-    kotlin("android")
+    kotlin("android") version "2.3.0"
     id("com.lagradost.cloudstream3.gradle")
 }
 
