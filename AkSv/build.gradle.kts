@@ -1,23 +1,28 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
+
 plugins {
     id("com.android.library")
-    kotlin("android") version "2.3.0"
+    kotlin("android")
     id("com.lagradost.cloudstream3.gradle")
 }
+
 
 android {
     namespace = "com.example" 
     compileSdk = 33
 
+
     defaultConfig {
         minSdk = 21
     }
+
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
 
     tasks.withType<KotlinCompile> {
         compilerOptions {
@@ -27,7 +32,9 @@ android {
     }
 }
 
+
 version = "1.0.0"
+
 
 cloudstream {
     language = "ar"
@@ -37,6 +44,7 @@ cloudstream {
     tvTypes = listOf("Movie", "TvSeries")
     iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
 }
+
 
 dependencies {
     apk("com.lagradost:cloudstream3:pre-release")
