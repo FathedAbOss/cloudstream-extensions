@@ -12,8 +12,8 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
+        classpath("com.github.recloudstream:gradle:-SNAPSHOT")     
+           cclasspath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
     }
 }
 
@@ -65,9 +65,7 @@ subprojects {
     }
 
     dependencies {
-        val cloudstream_version = "master-SNAPSHOT"
         // Correct artifact name matches the repo name: 'cloudstream'
-        add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
-        add("implementation", "org.jsoup:jsoup:1.15.3")
-    }
-}
+       add("implementation", "com.github.recloudstream.cloudstream:library:-SNAPSHOT")
+    add("implementation", "org.jsoup:jsoup:1.15.3")
+       
