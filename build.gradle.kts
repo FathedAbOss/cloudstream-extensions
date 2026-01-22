@@ -6,7 +6,13 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
+        maven {
+            url = uri("https://jitpack.io")
+            credentials {
+                // This command reads the token provided by the workflow file above
+                username = System.getenv("JITPACK_TOKEN") 
+            }
+        }
     }
 
     dependencies {
@@ -20,7 +26,13 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io")
+        maven {
+            url = uri("https://jitpack.io")
+            credentials {
+                // This command reads the token provided by the workflow file above
+                username = System.getenv("JITPACK_TOKEN")
+            }
+        }
     }
 }
 
@@ -78,6 +90,3 @@ task("makeAllPlugins") {
         dependsOn(sub.tasks.matching { it.name == "make" })
     }
 }
-
-// The Cloudstream plugin already provides 'makePluginsJson' in the root project
-// if applied correctly, but we'll ensure it's triggered.
