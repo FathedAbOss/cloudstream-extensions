@@ -1,9 +1,11 @@
 name: Build
 
+
 # https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#concurrency
 concurrency:
   group: "build"
   cancel-in-progress: true
+
 
 on:
   push:
@@ -14,12 +16,14 @@ on:
     paths-ignore:
       - '*.md'
 
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@master
+
 
       - name: Checkout builds
         uses: actions/checkout@master
@@ -29,28 +33,26 @@ jobs:
           # We need to fetch the builds branch to commit to it later.
           # This is a common pattern for hosting build artifacts on a separate branch.
 
+
       - name: Clean old builds
         run: rm -rf $GITHUB_WORKSPACE/builds/*.cs3
+
 
       - name: Setup JDK 17
         uses: actions/setup-java@v1
         with:
           java-version: 17
 
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v2
+
 
       - name: Build Plugins
         run: |
           chmod +x gradlew
-          # The makePluginsJson task is crucial for generating the correct plugins.json
-          # with the correct URLs (pointing to the 'builds' branch raw content).
-          ./gradlew make makePluginsJson
-
-          # Copy the generated .cs3 files and plugins.json to the 'builds' directory
-          cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
-          cp build/plugins.json $GITHUB_WORKSPACE/builds
-
+          ./gradlew makeAllPlugins
+          ./gradlew makePluginsJson
       - name: Push builds
         run: |
           cd $GITHUB_WORKSPACE/builds
