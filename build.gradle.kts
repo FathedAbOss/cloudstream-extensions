@@ -66,15 +66,18 @@ subprojects {
     }
 }
 
-// --- ADDED TASKS FOR GITHUB ACTIONS ---
+// --- ROOT TASKS ---
 task<Delete>("clean") {
-    delete(rootProject.buildDir)
+    delete(layout.buildDirectory)
 }
 
+// These tasks are already provided by the Cloudstream plugin in subprojects.
+// We just need a root task to trigger them all.
 task("makeAllPlugins") {
-    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "make" } })
+    subprojects.forEach { sub ->
+        dependsOn(sub.tasks.matching { it.name == "make" })
+    }
 }
 
-task("makePluginsJson") {
-    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "makePluginsJson" } })
-}
+// The Cloudstream plugin already provides 'makePluginsJson' in the root project
+// if applied correctly, but we'll ensure it's triggered.
