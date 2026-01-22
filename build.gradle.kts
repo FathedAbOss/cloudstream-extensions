@@ -65,9 +65,14 @@ subprojects {
     // Configure Dependencies
     dependencies {
         val cloudstream_version = "master-SNAPSHOT"
-        add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
+        
+        // 👇 CORRECTED: Use "cloudstream" instead of "cloudstream3"
+        add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
+        
         add("implementation", "org.jsoup:jsoup:1.15.3")
-        add("implementation", "com.github.recloudstream:nicehttp:master-SNAPSHOT")
+        
+        // 👇 CORRECTED: Use "Blatzar:NiceHttp" instead of "recloudstream:nicehttp"
+        add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
     }
 
     tasks.withType<KotlinCompile> {
