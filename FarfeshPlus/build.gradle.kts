@@ -7,21 +7,21 @@ plugins {
 }
 
 android {
-    namespace = "com.example"
-    compileSdk = 33
+    namespace = "com.fathedaboss.farfeshplus"
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 21
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
 
     tasks.withType<KotlinCompile> {
         compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
             freeCompilerArgs.add("-Xjvm-default=all")
         }
     }
@@ -35,9 +35,11 @@ cloudstream {
     authors = listOf("FathedAbOss")
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
-    iconUrl = "https://raw.githubusercontent.com/recloudstream/cloudstream/master/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"
 }
 
 dependencies {
-    apk("com.lagradost:cloudstream3:pre-release")
+    val cloudstream_version = "master-SNAPSHOT"
+    compileOnly("com.github.recloudstream:cloudstream3:$cloudstream_version")
+    implementation("org.jsoup:jsoup:1.15.3")
+    implementation("com.github.recloudstream:nicehttp:master-SNAPSHOT" )
 }
