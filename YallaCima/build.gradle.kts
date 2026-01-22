@@ -30,9 +30,10 @@ android {
 version = "1.0.0"
 
 cloudstream {
-    language = "ar"
+    name = "YallaCima"
     description = "YallaCima provider"
     authors = listOf("FathedAbOss")
+    language = "ar"
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
 }
