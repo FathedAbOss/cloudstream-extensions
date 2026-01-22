@@ -59,7 +59,7 @@ subprojects {
     }
 
     dependencies {
-        val cloudstream_version = "81d9ecd"
+        val cloudstream_version = "9ca8acb"
         add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
