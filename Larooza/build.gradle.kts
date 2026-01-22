@@ -30,7 +30,6 @@ android {
 version = "1.0.0"
 
 cloudstream {
-    name = "Larooza"
     description = "Larooza provider"
     authors = listOf("FathedAbOss")
     language = "ar"
