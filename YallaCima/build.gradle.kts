@@ -30,7 +30,6 @@ android {
 version = "1.0.0"
 
 cloudstream {
-    name = "YallaCima"
     description = "YallaCima provider"
     authors = listOf("FathedAbOss")
     language = "ar"
