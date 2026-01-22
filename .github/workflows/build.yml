@@ -1,6 +1,5 @@
 name: Build
 
-# https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#concurrency
 concurrency:
   group: "build"
   cancel-in-progress: true
@@ -8,7 +7,6 @@ concurrency:
 on:
   push:
     branches:
-      # choose your default branch
       - master
       - main
     paths-ignore:
@@ -26,7 +24,6 @@ jobs:
         with:
           ref: "builds"
           path: "builds"
-          # We need to fetch the builds branch to commit to it later.
 
       - name: Clean old builds
         run: rm -rf $GITHUB_WORKSPACE/builds/*.cs3
@@ -41,8 +38,9 @@ jobs:
 
       - name: Build Plugins
         env:
-          # This connects the Secret you saved in Settings to this script
           JITPACK_TOKEN: ${{ secrets.JITPACK_TOKEN }}
+          # This line increases the timeout to 10 minutes so JitPack doesn't fail
+          GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=600000 -Dorg.gradle.internal.http.socketTimeout=600000"
         run: |
           chmod +x gradlew
           ./gradlew makeAllPlugins
@@ -54,7 +52,5 @@ jobs:
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .
-          # Use --allow-empty to ensure the commit succeeds even if no files changed
           git commit -m "Build $GITHUB_SHA" --allow-empty || exit 0
-          # Explicitly push to the 'builds' branch
           git push origin HEAD:builds --force
