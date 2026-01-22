@@ -30,7 +30,6 @@ android {
 version = "1.0.0"
 
 cloudstream {
-    name = "EgyDead"
     description = "EgyDead provider"
     authors = listOf("FathedAbOss")
     language = "ar"
