@@ -65,3 +65,16 @@ subprojects {
         }
     }
 }
+
+// --- ADDED TASKS FOR GITHUB ACTIONS ---
+task<Delete>("clean") {
+    delete(rootProject.buildDir)
+}
+
+task("makeAllPlugins") {
+    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "make" } })
+}
+
+task("makePluginsJson") {
+    dependsOn(subprojects.map { it.tasks.matching { t -> t.name == "makePluginsJson" } })
+}
