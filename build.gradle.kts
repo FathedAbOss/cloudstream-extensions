@@ -9,8 +9,7 @@ buildscript {
         maven {
             url = uri("https://jitpack.io")
             credentials {
-                // This command reads the token provided by the workflow file above
-                username = System.getenv("JITPACK_TOKEN") 
+                username = System.getenv("JITPACK_TOKEN")
             }
         }
     }
@@ -18,7 +17,7 @@ buildscript {
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
 
@@ -29,7 +28,6 @@ allprojects {
         maven {
             url = uri("https://jitpack.io")
             credentials {
-                // This command reads the token provided by the workflow file above
                 username = System.getenv("JITPACK_TOKEN")
             }
         }
@@ -41,7 +39,6 @@ subprojects {
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    // Configure Android immediately to avoid "compileSdkVersion not specified"
     configure<BaseExtension> {
         namespace = "com.fathedaboss.${project.name.lowercase()}"
         compileSdkVersion(34)
@@ -52,44 +49,34 @@ subprojects {
         }
 
         compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_1_8
-            targetCompatibility = JavaVersion.VERSION_1_8
+            sourceCompatibility = JavaVersion.VERSION_17
+            targetCompatibility = JavaVersion.VERSION_17
         }
     }
 
-    // Configure Cloudstream
     extensions.configure<CloudstreamExtension> {
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "FathedAbOss/cloudstream-extensions")
     }
 
-    // Configure Dependencies
     dependencies {
-        val cloudstream_version = "master-SNAPSHOT"
-        
-        // 👇 CORRECTED: Use "cloudstream" instead of "cloudstream3"
+        val cloudstream_version = "58c84f0f334c7a32f294a45ea9d5cba2e2086009"
         add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
-        
         add("implementation", "org.jsoup:jsoup:1.15.3")
-        
-        // 👇 CORRECTED: Use "Blatzar:NiceHttp" instead of "recloudstream:nicehttp"
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
     }
 
     tasks.withType<KotlinCompile> {
         kotlinOptions {
-            jvmTarget = "1.8"
+            jvmTarget = "17"
             freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all"
         }
     }
 }
 
-// --- ROOT TASKS ---
 task<Delete>("clean") {
     delete(layout.buildDirectory)
 }
 
-// These tasks are already provided by the Cloudstream plugin in subprojects.
-// We just need a root task to trigger them all.
 task("makeAllPlugins") {
     subprojects.forEach { sub ->
         dependsOn(sub.tasks.matching { it.name == "make" })
