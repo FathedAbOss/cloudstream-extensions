@@ -30,13 +30,13 @@ android {
 version = "1.0.0"
 
 cloudstream {
-    language = "ar"
+    name = "Brstej"
     description = "Brstej provider"
     authors = listOf("FathedAbOss")
+    language = "ar"
     status = 1
     tvTypes = listOf("Movie", "TvSeries")
 }
-
 dependencies {
     val cloudstream_version = "master-SNAPSHOT"
     compileOnly("com.github.recloudstream:cloudstream3:$cloudstream_version")
