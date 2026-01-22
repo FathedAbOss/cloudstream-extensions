@@ -6,12 +6,11 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io" )
+        maven("https://jitpack.io")
     }
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
-        // Use a stable version of the gradle plugin instead of -SNAPSHOT
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
     }
@@ -21,7 +20,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven("https://jitpack.io" )
+        maven("https://jitpack.io")
     }
 }
 
@@ -37,22 +36,35 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     cloudstream {
-        // This automatically sets the repo for the plugins.json
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "FathedAbOss/cloudstream-extensions")
     }
 
-    android {
-        namespace = "com.fathedaboss.${project.name.lowercase()}"
-        compileSdk = 34
+    // Use afterEvaluate to ensure the android extension is available
+    afterEvaluate {
+        if (project.extensions.findByName("android") != null) {
+            configure<BaseExtension> {
+                namespace = "com.fathedaboss.${project.name.lowercase()}"
+                compileSdkVersion(34)
 
-        defaultConfig {
-            minSdk = 21
-            targetSdk = 34
+                defaultConfig {
+                    minSdk = 21
+                    targetSdk = 34
+                }
+
+                compileOptions {
+                    sourceCompatibility = JavaVersion.VERSION_1_8
+                    targetCompatibility = JavaVersion.VERSION_1_8
+                }
+            }
         }
-
-        compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_1_8
-            targetCompatibility = JavaVersion.VERSION_1_8
+        
+        if (project.extensions.findByName("dependencies") != null) {
+            dependencies {
+                val cloudstream_version = "master-SNAPSHOT"
+                add("compileOnly", "com.github.recloudstream:cloudstream3:$cloudstream_version")
+                add("implementation", "org.jsoup:jsoup:1.15.3")
+                add("implementation", "com.github.recloudstream:nicehttp:master-SNAPSHOT")
+            }
         }
     }
 
@@ -61,14 +73,5 @@ subprojects {
             jvmTarget = "1.8"
             freeCompilerArgs = freeCompilerArgs + "-Xjvm-default=all"
         }
-    }
-
-    dependencies {
-        // Use a specific commit hash or a stable tag instead of master-SNAPSHOT to avoid 401 errors
-        val cloudstream_version = "master-SNAPSHOT" 
-        compileOnly("com.github.recloudstream:cloudstream3:$cloudstream_version")
-        
-        implementation("org.jsoup:jsoup:1.15.3")
-        implementation("com.github.recloudstream:nicehttp:master-SNAPSHOT" )
     }
 }
