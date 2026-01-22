@@ -39,7 +39,6 @@ jobs:
       - name: Build Plugins
         env:
           JITPACK_TOKEN: ${{ secrets.JITPACK_TOKEN }}
-          # This line increases the timeout to 10 minutes so JitPack doesn't fail
           GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=600000 -Dorg.gradle.internal.http.socketTimeout=600000"
         run: |
           chmod +x gradlew
