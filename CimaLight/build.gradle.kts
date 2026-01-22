@@ -30,7 +30,6 @@ android {
 version = "1.0.0"
 
 cloudstream {
-    name = "CimaLight"
     description = "CimaLight provider"
     authors = listOf("FathedAbOss")
     language = "ar"
