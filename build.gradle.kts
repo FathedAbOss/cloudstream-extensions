@@ -6,9 +6,7 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-
-        // ✅ JitPack repo (NO token needed for public dependencies)
-        maven { url = uri("https://jitpack.io") }
+        maven(url = "https://www.jitpack.io")
     }
 
     dependencies {
@@ -22,9 +20,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-
-        // ✅ JitPack repo (NO token needed for public dependencies)
-        maven { url = uri("https://jitpack.io") }
+        maven(url = "https://www.jitpack.io")
     }
 }
 
@@ -32,9 +28,6 @@ subprojects {
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
-
-    // ✅ VERIFIED VERSION: "pre-release" points to the Legacy API (v4 compatibility)
-    val cloudstream_version = "pre-release"
 
     configure<BaseExtension> {
         namespace = "com.fathedaboss.${project.name.lowercase()}"
@@ -56,8 +49,9 @@ subprojects {
     }
 
     dependencies {
-        // ✅ FIX: correct dependency coordinates
-        add("compileOnly", "com.lagradost:cloudstream3:$cloudstream_version")
+        // IMPORTANT:
+        // CloudstreamApi replaces the missing "com.lagradost:cloudstream3:pre-release"
+        add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
