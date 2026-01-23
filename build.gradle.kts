@@ -30,7 +30,10 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     configure<BaseExtension> {
+        // IMPORTANT: This auto-generates a unique namespace per plugin module
+        // Example for module "EgyDead" => "com.fathedaboss.egydead"
         namespace = "com.fathedaboss.${project.name.lowercase()}"
+
         compileSdkVersion(34)
 
         defaultConfig {
@@ -49,8 +52,7 @@ subprojects {
     }
 
     dependencies {
-        // IMPORTANT:
-        // CloudstreamApi replaces the missing "com.lagradost:cloudstream3:pre-release"
+        // FIX: Use Cloudstream API stubs so Gradle can compile plugins in CI
         add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
