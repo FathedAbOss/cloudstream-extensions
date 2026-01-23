@@ -5,25 +5,22 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
 
 class EgyDeadProvider : MainAPI() {
-    override var mainUrl = "https://egydead.media" // Ensure no trailing slash here
+    override var mainUrl = "https://egydead.media"
     override var name = "EgyDead"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var lang = "ar"
     override var hasMainPage = true
 
-    // 1. ADD THIS: This tells Cloudstream what tabs to show on the home screen
+    // This defines the "Latest Movies" and "Latest Series" tabs on the home screen
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Latest Movies",
-        "$mainUrl/series/" to "Latest Series" // Adjust if the series URL is different
+        "$mainUrl/movies/" to "Latest Movies",
+        "$mainUrl/series/" to "Latest Series"
     )
 
-    // 2. USE "loadMainPage": This is the standard override for v3/v4
     override suspend fun loadMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
-        // Use the URL passed by the request (defined in mainPage above)
-        val document = app.get(request.data).document 
+        val document = app.get(request.data).document
         
-        // 3. DEBUGGING: If this is still empty, the selector "div.mov-item" is wrong.
-        // Try "div.movieItem", "div.item", or "div.box" if this fails.
+        // Selector "div.mov-item" matches the grid items on EgyDead
         val items = document.select("div.mov-item").mapNotNull {
             it.toSearchResult()
         }
