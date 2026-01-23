@@ -13,7 +13,7 @@ class ElCinemaProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // ✅ Main page (Now Playing)
+    // ✅ Main page: Now Playing
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = "$mainUrl/en/now/eg/?page=$page"
         val document = app.get(url).document
@@ -84,8 +84,8 @@ class ElCinemaProvider : MainAPI() {
         }
     }
 
-    // ✅ ElCinema har oftast INGA riktiga streams (m3u8/mp4),
-    // men vi försöker ändå samla externa "watch" länkar som ExtractorLink
+    // ✅ Load links
+    // ElCinema hostar oftast inte streams direkt, men vi försöker ta externa länkar.
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -107,15 +107,14 @@ class ElCinemaProvider : MainAPI() {
 
         externalLinks.forEach { link ->
             callback(
-                newExtractorLink(
+                ExtractorLink(
                     source = name,
                     name = "Open Link",
                     url = link,
-                    referer = data
-                ) {
-                    quality = Qualities.Unknown.value
+                    referer = data,
+                    quality = Qualities.Unknown.value,
                     isM3u8 = false
-                }
+                )
             )
         }
 
