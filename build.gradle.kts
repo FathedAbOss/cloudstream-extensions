@@ -6,13 +6,15 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven(url = "https://jitpack.io")
+        maven(url = "https://www.jitpack.io")
     }
 
     dependencies {
         classpath("com.android.tools.build:gradle:8.2.0")
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
+
+        // ✅ FIX: Kotlin must match Cloudstream libs (Kotlin 2.3.x)
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
 
@@ -20,7 +22,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven(url = "https://jitpack.io")
+        maven(url = "https://www.jitpack.io")
     }
 }
 
@@ -29,11 +31,9 @@ subprojects {
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    // Fix: avoid "'unspecified' is not a valid version"
-    version = 1
-
     configure<BaseExtension> {
         namespace = "com.fathedaboss.${project.name.lowercase()}"
+
         compileSdkVersion(34)
 
         defaultConfig {
@@ -52,8 +52,8 @@ subprojects {
     }
 
     dependencies {
-        // ✅ FIX: this version exists on JitPack
-        add("compileOnly", "com.github.recloudstream:cloudstream:master-SNAPSHOT")
+        // ✅ This is enough for compilation
+        add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
