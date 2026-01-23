@@ -1,5 +1,6 @@
 import com.android.build.gradle.BaseExtension
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 buildscript {
@@ -13,7 +14,7 @@ buildscript {
         classpath("com.android.tools.build:gradle:8.2.0")
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
 
-        // ✅ FIX: Kotlin must match Cloudstream libs (Kotlin 2.3.x)
+        // ✅ Kotlin 2.3.0 (fixes metadata 2.3.0 errors)
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
@@ -52,17 +53,18 @@ subprojects {
     }
 
     dependencies {
-        // ✅ This is enough for compilation
+        // ✅ Cloudstream API stubs for compiling in CI
         add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
     }
 
-    tasks.withType<KotlinCompile> {
-        kotlinOptions {
-            jvmTarget = "1.8"
-            freeCompilerArgs = freeCompilerArgs + listOf(
+    // ✅ FIX: kotlinOptions -> compilerOptions (required now)
+    tasks.withType<KotlinCompile>().configureEach {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_1_8)
+            freeCompilerArgs.addAll(
                 "-Xno-param-assertions",
                 "-Xjvm-default=all"
             )
