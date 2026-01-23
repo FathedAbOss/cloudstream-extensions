@@ -39,10 +39,12 @@ jobs:
       - name: Build Plugins
         env:
           JITPACK_TOKEN: ${{ secrets.JITPACK_TOKEN }}
+          # Keeping your timeout fix here
           GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=600000 -Dorg.gradle.internal.http.socketTimeout=600000"
         run: |
           chmod +x gradlew
-          ./gradlew makeAllPlugins
+          # CHANGE: Added --refresh-dependencies to force new download
+          ./gradlew makeAllPlugins --refresh-dependencies
           ./gradlew makePluginsJson
 
       - name: Push builds
