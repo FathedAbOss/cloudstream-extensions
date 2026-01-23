@@ -87,25 +87,35 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+   override suspend fun loadLinks(
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
 
-        val document = app.get(data).document
+    val document = app.get(data).document
 
-        val links = document.select("a[href]")
-            .map { fixUrl(it.attr("href")) }
-            .filter { it.startsWith("http") }
-            .filter { !it.contains(mainUrl) }
-            .distinct()
+    // 1) Vanliga länkar <a href="...">
+    val linksA = document.select("a[href]")
+        .map { fixUrl(it.attr("href")) }
+        .filter { it.startsWith("http") }
+        .filter { !it.contains(mainUrl) }
+        .distinct()
 
-        links.forEach { link ->
-            loadExtractor(link, data, subtitleCallback, callback)
-        }
+    // 2) Iframe-länkar <iframe src="...">
+    val linksIframe = document.select("iframe[src]")
+        .mapNotNull { fixUrlNull(it.attr("src")) }
+        .filter { it.startsWith("http") }
+        .filter { !it.contains(mainUrl) }
+        .distinct()
 
-        return links.isNotEmpty()
+    val allLinks = (linksA + linksIframe).distinct()
+
+    allLinks.forEach { link ->
+        loadExtractor(link, data, subtitleCallback, callback)
     }
+
+    return allLinks.isNotEmpty()
 }
+
