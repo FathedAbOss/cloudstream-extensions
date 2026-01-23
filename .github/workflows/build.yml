@@ -39,7 +39,6 @@ jobs:
 
       - name: Build Plugins
         env:
-          # ✅ Keep your timeout fix
           GRADLE_OPTS: "-Dorg.gradle.internal.http.connectionTimeout=600000 -Dorg.gradle.internal.http.socketTimeout=600000"
         run: |
           chmod +x gradlew
