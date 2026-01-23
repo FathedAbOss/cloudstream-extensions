@@ -6,16 +6,13 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven {
-            url = uri("https://jitpack.io")
-            credentials {
-                username = System.getenv("JITPACK_TOKEN")
-            }
-        }
+
+        // ✅ JitPack repo (NO token needed for public dependencies)
+        maven { url = uri("https://jitpack.io") }
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:8.2.0") 
+        classpath("com.android.tools.build:gradle:8.2.0")
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
     }
@@ -25,12 +22,9 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven {
-            url = uri("https://jitpack.io")
-            credentials {
-                username = System.getenv("JITPACK_TOKEN")
-            }
-        }
+
+        // ✅ JitPack repo (NO token needed for public dependencies)
+        maven { url = uri("https://jitpack.io") }
     }
 }
 
@@ -39,7 +33,7 @@ subprojects {
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    // VERIFIED VERSION: "pre-release" points to the Legacy API (v4 compatibility)
+    // ✅ VERIFIED VERSION: "pre-release" points to the Legacy API (v4 compatibility)
     val cloudstream_version = "pre-release"
 
     configure<BaseExtension> {
@@ -62,8 +56,9 @@ subprojects {
     }
 
     dependencies {
-        // We use the 'pre-release' tag which JitPack understands as a version
-        add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
+        // ✅ FIX: correct dependency coordinates
+        add("compileOnly", "com.lagradost:cloudstream3:$cloudstream_version")
+
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
     }
@@ -71,8 +66,10 @@ subprojects {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "1.8"
-            // Important for legacy compatibility
-            freeCompilerArgs = freeCompilerArgs + listOf("-Xno-param-assertions", "-Xjvm-default=all")
+            freeCompilerArgs = freeCompilerArgs + listOf(
+                "-Xno-param-assertions",
+                "-Xjvm-default=all"
+            )
         }
     }
 }
