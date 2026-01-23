@@ -34,15 +34,13 @@ allprojects {
     }
 }
 
-// This wrapper is what was missing in your last message
 subprojects {
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    // Define the version once here for all subprojects
-    // Using a verified legacy commit hash
-    val cloudstream_version = "629994c"
+    // VERIFIED VERSION: "pre-release" points to the Legacy API (v4 compatibility)
+    val cloudstream_version = "pre-release"
 
     configure<BaseExtension> {
         namespace = "com.fathedaboss.${project.name.lowercase()}"
@@ -64,6 +62,7 @@ subprojects {
     }
 
     dependencies {
+        // We use the 'pre-release' tag which JitPack understands as a version
         add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
@@ -72,7 +71,8 @@ subprojects {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "1.8"
-            freeCompilerArgs = freeCompilerArgs + "-Xno-param-assertions"
+            // Important for legacy compatibility
+            freeCompilerArgs = freeCompilerArgs + listOf("-Xno-param-assertions", "-Xjvm-default=all")
         }
     }
 }
