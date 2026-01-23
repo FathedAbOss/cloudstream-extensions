@@ -10,9 +10,7 @@ buildscript {
     }
 
     dependencies {
-        // ✅ FIXED: must be 8.2.2 or higher
         classpath("com.android.tools.build:gradle:8.2.2")
-
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
     }
@@ -55,6 +53,11 @@ subprojects {
         add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
+    }
+
+    // ✅ FIX: make Kotlin match Java (1.8)
+    tasks.withType<KotlinCompile>().configureEach {
+        kotlinOptions.jvmTarget = "1.8"
     }
 }
 
