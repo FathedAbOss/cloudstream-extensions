@@ -26,7 +26,6 @@ class CimaLightProvider : MainAPI() {
 
             if (title.isBlank() || link.isBlank()) return@mapNotNull null
 
-            // ✅ poster nära titeln
             val poster = a.parent()?.parent()
                 ?.selectFirst("img")
                 ?.attr("src")
@@ -87,35 +86,35 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
-   override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
 
-    val document = app.get(data).document
+        val document = app.get(data).document
 
-    // 1) Vanliga länkar <a href="...">
-    val linksA = document.select("a[href]")
-        .map { fixUrl(it.attr("href")) }
-        .filter { it.startsWith("http") }
-        .filter { !it.contains(mainUrl) }
-        .distinct()
+        // 1) Vanliga länkar <a href="...">
+        val linksA = document.select("a[href]")
+            .map { fixUrl(it.attr("href")) }
+            .filter { it.startsWith("http") }
+            .filter { !it.contains(mainUrl) }
+            .distinct()
 
-    // 2) Iframe-länkar <iframe src="...">
-    val linksIframe = document.select("iframe[src]")
-        .mapNotNull { fixUrlNull(it.attr("src")) }
-        .filter { it.startsWith("http") }
-        .filter { !it.contains(mainUrl) }
-        .distinct()
+        // 2) Iframe-länkar <iframe src="...">
+        val linksIframe = document.select("iframe[src]")
+            .mapNotNull { fixUrlNull(it.attr("src")) }
+            .filter { it.startsWith("http") }
+            .filter { !it.contains(mainUrl) }
+            .distinct()
 
-    val allLinks = (linksA + linksIframe).distinct()
+        val allLinks = (linksA + linksIframe).distinct()
 
-    allLinks.forEach { link ->
-        loadExtractor(link, data, subtitleCallback, callback)
+        allLinks.forEach { link ->
+            loadExtractor(link, data, subtitleCallback, callback)
+        }
+
+        return allLinks.isNotEmpty()
     }
-
-    return allLinks.isNotEmpty()
 }
-
