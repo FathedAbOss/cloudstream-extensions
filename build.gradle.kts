@@ -1,7 +1,6 @@
 import com.android.build.gradle.BaseExtension
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 buildscript {
     repositories {
@@ -11,14 +10,9 @@ buildscript {
     }
 
     dependencies {
-        // ✅ AGP must be >= 8.2.2
         classpath("com.android.tools.build:gradle:8.2.2")
-
-        // ✅ Cloudstream gradle plugin
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-
-        // ✅ Kotlin version MUST match Cloudstream libs (2.3.x)
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
     }
 }
 
@@ -35,9 +29,6 @@ subprojects {
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    // ✅ Fix "unspecified" warning
-    version = 1
-
     configure<BaseExtension> {
         namespace = "com.fathedaboss.${project.name.lowercase()}"
 
@@ -48,17 +39,10 @@ subprojects {
             targetSdk = 34
         }
 
-        // ✅ Java MUST match Kotlin (use 17)
+        // Java 1.8
         compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_17
-            targetCompatibility = JavaVersion.VERSION_17
-        }
-    }
-
-    // ✅ Kotlin MUST match Java target (17)
-    tasks.withType<KotlinCompile>().configureEach {
-        compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
+            sourceCompatibility = JavaVersion.VERSION_1_8
+            targetCompatibility = JavaVersion.VERSION_1_8
         }
     }
 
@@ -67,13 +51,16 @@ subprojects {
     }
 
     dependencies {
-        // ✅ IMPORTANT FIX:
-        // This is the correct Cloudstream API library the plugins need
+        // ✅ IMPORTANT FIX: This gives Plugin + registerMainAPI
         add("compileOnly", "com.github.recloudstream:cloudstream:master-SNAPSHOT")
 
-        // your other libs
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
+    }
+
+    // ✅ Kotlin must match Java 1.8
+    tasks.withType<KotlinCompile>().configureEach {
+        kotlinOptions.jvmTarget = "1.8"
     }
 }
 
