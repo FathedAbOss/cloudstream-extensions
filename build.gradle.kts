@@ -29,9 +29,11 @@ subprojects {
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
+    // Set an integer version to avoid: "'unspecified' is not a valid version"
+    version = 1
+
     configure<BaseExtension> {
-        // IMPORTANT: This auto-generates a unique namespace per plugin module
-        // Example for module "EgyDead" => "com.fathedaboss.egydead"
+        // Auto-generates a unique namespace per plugin module
         namespace = "com.fathedaboss.${project.name.lowercase()}"
 
         compileSdkVersion(34)
@@ -52,7 +54,7 @@ subprojects {
     }
 
     dependencies {
-        // FIX: Use Cloudstream API stubs so Gradle can compile plugins in CI
+        // Cloudstream API stubs for CI compilation
         add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
