@@ -2,7 +2,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6713,
+        "fileSize": 7176,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -12,7 +12,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "AkSv",
         "description": "AkSv provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/AkSv.cs3",
@@ -21,7 +21,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6166,
+        "fileSize": 6622,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -31,7 +31,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "Brstej",
         "description": "Brstej provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/Brstej.cs3",
@@ -40,7 +40,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6169,
+        "fileSize": 6634,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -50,7 +50,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "CimaLight",
         "description": "CimaLight provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/CimaLight.cs3",
@@ -59,7 +59,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6829,
+        "fileSize": 7335,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -69,7 +69,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "EgyDead",
         "description": "EgyDead provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/EgyDead.cs3",
@@ -78,7 +78,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6158,
+        "fileSize": 6624,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -88,7 +88,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "ElCinema",
         "description": "ElCinema provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/ElCinema.cs3",
@@ -97,7 +97,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 2494,
+        "fileSize": 2497,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -107,7 +107,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "FarfeshPlus",
         "description": "FarfeshPlus provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/FarfeshPlus.cs3",
@@ -116,7 +116,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 2486,
+        "fileSize": 2497,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -126,7 +126,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "JustWatch",
         "description": "JustWatch provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/JustWatch.cs3",
@@ -135,7 +135,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6162,
+        "fileSize": 6627,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -145,7 +145,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "Larooza",
         "description": "Larooza provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/Larooza.cs3",
@@ -154,7 +154,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 7677,
+        "fileSize": 8164,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -164,7 +164,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "MyCima",
         "description": "MyCima provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/MyCima.cs3",
@@ -173,7 +173,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 7679,
+        "fileSize": 8161,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -183,7 +183,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "WeCima",
         "description": "WeCima provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/WeCima.cs3",
@@ -192,7 +192,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 6167,
+        "fileSize": 6634,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -202,7 +202,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "YallaCima",
         "description": "YallaCima provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/YallaCima.cs3",
