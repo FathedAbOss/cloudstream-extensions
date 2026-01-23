@@ -44,6 +44,7 @@ jobs:
           chmod +x gradlew
           ./gradlew makeAllPlugins --refresh-dependencies
           ./gradlew makePluginsJson
+          cp build/plugins.json builds/plugins.json
 
       - name: Push builds
         run: |
