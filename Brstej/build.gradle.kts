@@ -1,3 +1,5 @@
+version = 1
+
 cloudstream {
     description = "Brstej provider"
     authors = listOf("FathedAbOss")
