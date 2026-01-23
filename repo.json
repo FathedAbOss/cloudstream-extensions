@@ -1,0 +1,8 @@
+{
+  "name": "My CloudStream Repo",
+  "description": "My CloudStream extensions",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/plugins.json"
+  ]
+}
