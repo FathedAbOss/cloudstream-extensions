@@ -1,5 +1,6 @@
 import com.android.build.gradle.BaseExtension
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 buildscript {
@@ -10,9 +11,14 @@ buildscript {
     }
 
     dependencies {
+        // ✅ AGP (Android Gradle Plugin)
         classpath("com.android.tools.build:gradle:8.2.2")
+
+        // ✅ Cloudstream Gradle plugin
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
+
+        // ✅ IMPORTANT: Kotlin must match Cloudstream (now Kotlin 2.3.0)
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
 
@@ -25,6 +31,9 @@ allprojects {
 }
 
 subprojects {
+    // ✅ removes "'unspecified' is not a valid version. Use an integer."
+    version = 1
+
     apply(plugin = "com.android.library")
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
@@ -39,7 +48,7 @@ subprojects {
             targetSdk = 34
         }
 
-        // Java 1.8
+        // ✅ Java = 1.8
         compileOptions {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
@@ -51,24 +60,27 @@ subprojects {
     }
 
     dependencies {
-        // ✅ IMPORTANT FIX: This gives Plugin + registerMainAPI
+        // ✅ Cloudstream API (needed for Plugin/MainAPI/registerMainAPI)
         add("compileOnly", "com.github.recloudstream:cloudstream:master-SNAPSHOT")
 
+        add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
     }
 
-    // ✅ Kotlin must match Java 1.8
+    // ✅ Kotlin: use compilerOptions (NEW DSL)
     tasks.withType<KotlinCompile>().configureEach {
-        kotlinOptions.jvmTarget = "1.8"
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_1_8)
+        }
     }
 }
 
-task<Delete>("clean") {
+tasks.register<Delete>("clean") {
     delete(layout.buildDirectory)
 }
 
-task("makeAllPlugins") {
+tasks.register("makeAllPlugins") {
     subprojects.forEach { sub ->
         dependsOn(sub.tasks.matching { it.name == "make" })
     }
