@@ -87,50 +87,45 @@ class CimaLightProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
 
-    val document = app.get(data).document
+        val document = app.get(data).document
 
-    // 1) Vanliga länkar <a href="...">
-    val linksA = document.select("a[href]")
-        .mapNotNull { fixUrlNull(it.attr("href").trim()) }
-        .filter { it.startsWith("http") }
-        .distinct()
+        val linksA = document.select("a[href]")
+            .mapNotNull { fixUrlNull(it.attr("href").trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
 
-    // 2) Iframe-länkar <iframe src="...">
-    val linksIframe = document.select("iframe[src]")
-        .mapNotNull { fixUrlNull(it.attr("src").trim()) }
-        .filter { it.startsWith("http") }
-        .distinct()
+        val linksIframe = document.select("iframe[src]")
+            .mapNotNull { fixUrlNull(it.attr("src").trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
 
-    // 3) Data-länkar: data-url / data-href
-    val linksData = document.select("[data-url], [data-href]")
-        .flatMap {
-            listOf(it.attr("data-url"), it.attr("data-href"))
+        val linksData = document.select("[data-url], [data-href]")
+            .flatMap { el -> listOf(el.attr("data-url"), el.attr("data-href")) }
+            .mapNotNull { fixUrlNull(it.trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
+
+        val linksOnClick = document.select("[onclick]")
+            .mapNotNull { el ->
+                val on = el.attr("onclick")
+                Regex("(https?://[^'\"\\s]+)").find(on)?.value
+            }
+            .mapNotNull { fixUrlNull(it.trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
+
+        val allLinks = (linksA + linksIframe + linksData + linksOnClick).distinct()
+
+        allLinks.forEach { link ->
+            loadExtractor(link, data, subtitleCallback, callback)
         }
-        .mapNotNull { fixUrlNull(it.trim()) }
-        .filter { it.startsWith("http") }
-        .distinct()
 
-    // 4) Onclick-länkar: onclick="window.open('https://...')"
-    val linksOnClick = document.select("[onclick]")
-        .mapNotNull { el ->
-            val on = el.attr("onclick")
-            Regex("(https?://[^'\"\\s]+)").find(on)?.value
-        }
-        .mapNotNull { fixUrlNull(it.trim()) }
-        .filter { it.startsWith("http") }
-        .distinct()
-
-    val allLinks = (linksA + linksIframe + linksData + linksOnClick).distinct()
-
-    allLinks.forEach { link ->
-        loadExtractor(link, data, subtitleCallback, callback)
+        return allLinks.isNotEmpty()
     }
-
-    return allLinks.isNotEmpty()
 }
