@@ -9,7 +9,7 @@ class ElCinemaProvider : MainAPI() {
     override var name = "ElCinema"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries )
     override var lang = "ar"
-    override var hasMainPage = true
+    override var hasMainPage = false
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(mainUrl).document
