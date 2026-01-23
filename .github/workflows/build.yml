@@ -43,7 +43,13 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew makeAllPlugins --refresh-dependencies
+
+          # Copy all generated .cs3 files into /builds folder (so CloudStream can download them)
+          find . -name "*.cs3" -exec cp {} builds/ \;
+
           ./gradlew makePluginsJson
+
+          # Replace the plugins.json in builds branch with the newly generated one
           rm -f builds/plugins.json
           cp -f build/plugins.json builds/plugins.json
 
