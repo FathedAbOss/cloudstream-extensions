@@ -1,6 +1,6 @@
 {
-  "name": "My CloudStream Repo",
-  "description": "My CloudStream extensions",
+  "name": "FathedAbOss Repo",
+  "description": "CloudStream extensions",
   "manifestVersion": 1,
   "pluginLists": [
     "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/plugins.json"
