@@ -1,7 +1,6 @@
 import com.android.build.gradle.BaseExtension
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 buildscript {
     repositories {
@@ -16,9 +15,12 @@ buildscript {
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:8.7.3")
+        // KEEP: Valid Gradle version
+        classpath("com.android.tools.build:gradle:8.2.0") 
+        // KEEP: Cloudstream Gradle Plugin
         classpath("com.github.recloudstream:gradle:master-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
+        // CRITICAL FIX: Downgraded Kotlin from 2.3.0 to 1.9.24 to match Legacy Code
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24")
     }
 }
 
@@ -41,6 +43,7 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     configure<BaseExtension> {
+        // KEEP: Your dynamic namespace logic
         namespace = "com.fathedaboss.${project.name.lowercase()}"
         compileSdkVersion(34)
 
@@ -49,9 +52,10 @@ subprojects {
             targetSdk = 34
         }
 
+        // CRITICAL FIX: Downgraded Java from 17 to 1.8 (Standard for Legacy Plugins)
         compileOptions {
-            sourceCompatibility = JavaVersion.VERSION_17
-            targetCompatibility = JavaVersion.VERSION_17
+            sourceCompatibility = JavaVersion.VERSION_1_8
+            targetCompatibility = JavaVersion.VERSION_1_8
         }
     }
 
@@ -60,16 +64,20 @@ subprojects {
     }
 
     dependencies {
-        val cloudstream_version = "master-SNAPSHOT"
+        // CRITICAL FIX: Replaced 'master-SNAPSHOT' with a fixed Legacy Commit Hash
+        // This hash points to a version where 'Plugin()' class still exists.
+        val cloudstream_version = "af72363" 
+        
         add("compileOnly", "com.github.recloudstream:cloudstream:$cloudstream_version")
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
     }
 
     tasks.withType<KotlinCompile> {
-        compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
-            freeCompilerArgs.add("-Xjvm-default=all")
+        // CRITICAL FIX: Switched to 'kotlinOptions' (Legacy DSL) and Target 1.8
+        kotlinOptions {
+            jvmTarget = "1.8"
+            freeCompilerArgs = freeCompilerArgs + "-Xno-param-assertions"
         }
     }
 }
