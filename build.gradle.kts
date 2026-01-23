@@ -52,8 +52,8 @@ subprojects {
     }
 
     dependencies {
-        // ✅ IMPORTANT FIX: Use ReCloudStream API (matches CloudStream app runtime)
-        add("compileOnly", "com.github.recloudstream:cloudstream:pre-release")
+        // ✅ FIX: this version exists on JitPack
+        add("compileOnly", "com.github.recloudstream:cloudstream:master-SNAPSHOT")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
