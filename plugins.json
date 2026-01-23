@@ -21,7 +21,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 9064,
+        "fileSize": 9063,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -31,7 +31,7 @@
             "Movie",
             "TvSeries"
         ],
-        "version": -1,
+        "version": 1,
         "internalName": "Brstej",
         "description": "Brstej provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/Brstej.cs3",
