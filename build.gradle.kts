@@ -6,7 +6,7 @@ buildscript {
     repositories {
         google()
         mavenCentral()
-        maven(url = "https://www.jitpack.io")
+        maven(url = "https://jitpack.io")
     }
 
     dependencies {
@@ -20,7 +20,7 @@ allprojects {
     repositories {
         google()
         mavenCentral()
-        maven(url = "https://www.jitpack.io")
+        maven(url = "https://jitpack.io")
     }
 }
 
@@ -29,13 +29,11 @@ subprojects {
     apply(plugin = "kotlin-android")
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
-    // Set an integer version to avoid: "'unspecified' is not a valid version"
+    // Fix: avoid "'unspecified' is not a valid version"
     version = 1
 
     configure<BaseExtension> {
-        // Auto-generates a unique namespace per plugin module
         namespace = "com.fathedaboss.${project.name.lowercase()}"
-
         compileSdkVersion(34)
 
         defaultConfig {
@@ -54,8 +52,8 @@ subprojects {
     }
 
     dependencies {
-        // Cloudstream API stubs for CI compilation
-        add("compileOnly", "com.github.Blatzar:CloudstreamApi:0.1.7")
+        // ✅ IMPORTANT FIX: Use ReCloudStream API (matches CloudStream app runtime)
+        add("compileOnly", "com.github.recloudstream:cloudstream:pre-release")
 
         add("implementation", "org.jsoup:jsoup:1.15.3")
         add("implementation", "com.github.Blatzar:NiceHttp:0.4.11")
