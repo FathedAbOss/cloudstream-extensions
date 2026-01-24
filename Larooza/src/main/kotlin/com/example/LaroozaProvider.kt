@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 
 class LaroozaProvider : MainAPI() {
 
-    override var mainUrl = "https://www.larooza.makeup"
+    override var mainUrl = "https://larooza.makeup"
     override var name = "Larooza"
     override var lang = "ar"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
