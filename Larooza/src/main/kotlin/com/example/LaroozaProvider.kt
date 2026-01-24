@@ -5,32 +5,32 @@ import com.lagradost.cloudstream3.utils.*
 
 class LaroozaProvider : MainAPI() {
 
-    override var mainUrl = "https://larooza.makeup"
+    override var mainUrl = "https://www.larooza.makeup"
     override var name = "Larooza"
     override var lang = "ar"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
+    // ✅ Start from gaza.20 section
+    private val sectionUrl = "$mainUrl/gaza.20"
+
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "الأحدث",
-        "$mainUrl/movies/" to "أفلام",
-        "$mainUrl/series/" to "مسلسلات"
+        sectionUrl to "الرئيسية",
+        "$sectionUrl/films" to "أفلام",
+        "$sectionUrl/series" to "مسلسلات"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
 
-        val items = document.select("h3 a, h2 a").mapNotNull { a ->
+        val items = document.select("h3 a, h2 a, .postTitle a, .entry-title a").mapNotNull { a ->
             val title = a.text().trim()
-            val link = fixUrl(a.attr("href"))
+            val link = fixUrl(a.attr("href").trim())
 
             if (title.isBlank() || link.isBlank()) return@mapNotNull null
 
-            val poster = a.parent()?.parent()
-                ?.selectFirst("img")
-                ?.attr("src")
-                ?.trim()
-                ?.let { fixUrlNull(it) }
+            val img = a.parent()?.parent()?.selectFirst("img")
+            val poster = img?.attr("src")?.trim()?.let { fixUrlNull(it) }
 
             newMovieSearchResponse(title, link, TvType.Movie) {
                 this.posterUrl = poster
@@ -42,19 +42,17 @@ class LaroozaProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
-        val document = app.get("$mainUrl/?s=$q").document
+        // ✅ Search within the section
+        val document = app.get("$sectionUrl/?s=$q").document
 
-        return document.select("h3 a, h2 a").mapNotNull { a ->
+        return document.select("h3 a, h2 a, .postTitle a, .entry-title a").mapNotNull { a ->
             val title = a.text().trim()
-            val link = fixUrl(a.attr("href"))
+            val link = fixUrl(a.attr("href").trim())
 
             if (title.isBlank() || link.isBlank()) return@mapNotNull null
 
-            val poster = a.parent()?.parent()
-                ?.selectFirst("img")
-                ?.attr("src")
-                ?.trim()
-                ?.let { fixUrlNull(it) }
+            val img = a.parent()?.parent()?.selectFirst("img")
+            val poster = img?.attr("src")?.trim()?.let { fixUrlNull(it) }
 
             newMovieSearchResponse(title, link, TvType.Movie) {
                 this.posterUrl = poster
@@ -72,7 +70,6 @@ class LaroozaProvider : MainAPI() {
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // ✅ IMPORTANT: send watch/video URL as dataUrl
         return newMovieLoadResponse(
             name = title.ifBlank { "Larooza" },
             url = url,
@@ -85,7 +82,7 @@ class LaroozaProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String, // watch/video URL
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
