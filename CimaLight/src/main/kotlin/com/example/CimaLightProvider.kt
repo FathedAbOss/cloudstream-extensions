@@ -2,8 +2,6 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import org.jsoup.nodes.Document
 
 class CimaLightProvider : MainAPI() {
 
@@ -13,83 +11,134 @@ class CimaLightProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // ... (getMainPage, search, load methods remain the same as before) ...
+    override val mainPage = mainPageOf(
+        "$mainUrl/movies.php" to "أحدث الأفلام",
+        "$mainUrl/main15" to "جديد الموقع",
+        "$mainUrl/most.php" to "الأكثر مشاهدة"
+    )
 
-    /**
-     * The definitive fix for CimaLight Streaming.
-     * This method follows the 'xtgo' redirect chain to find the actual streaming servers
-     * hidden on external news sites (like elif.news or alhakekanet.net).
-     */
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(request.data).document
+
+        val items = document.select("h3 a").mapNotNull { a ->
+            val title = a.text().trim()
+            val link = fixUrl(a.attr("href"))
+
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+
+            val poster = a.parent()?.parent()
+                ?.selectFirst("img")
+                ?.attr("src")
+                ?.trim()
+                ?.let { fixUrlNull(it) }
+
+            newMovieSearchResponse(title, link, TvType.Movie) {
+                this.posterUrl = poster
+            }
+        }
+
+        return newHomePageResponse(request.name, items)
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val q = query.trim().replace(" ", "+")
+        val document = app.get("$mainUrl/search?q=$q").document
+
+        return document.select("h3 a").mapNotNull { a ->
+            val title = a.text().trim()
+            val link = fixUrl(a.attr("href"))
+
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+
+            val poster = a.parent()?.parent()
+                ?.selectFirst("img")
+                ?.attr("src")
+                ?.trim()
+                ?.let { fixUrlNull(it) }
+
+            newMovieSearchResponse(title, link, TvType.Movie) {
+                this.posterUrl = poster
+            }
+        }.distinctBy { it.url }
+    }
+
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+
+        val title = document.selectFirst("h1")?.text()?.trim().orEmpty()
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+            ?.trim()
+            ?.let { fixUrlNull(it) }
+
+        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+        // ✅ IMPORTANT: dataUrl must be WATCH url (so loadLinks can extract vid)
+        return newMovieLoadResponse(
+            name = title.ifBlank { "CimaLight" },
+            url = url,
+            type = TvType.Movie,
+            dataUrl = url
+        ) {
+            this.posterUrl = poster
+            this.plot = plot
+        }
+    }
+
     override suspend fun loadLinks(
-        data: String,
+        data: String, // watch URL e.g. https://w.cimalight.co/watch.php?vid=xxxx
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+
         val watchUrl = data.trim()
-        val watchDoc = app.get(watchUrl).document
-        
-        var linksFound = 0
 
-        // 1. Follow the 'xtgo' redirect link to the streaming server page
-        val xtgoLink = watchDoc.selectFirst("a.xtgo")?.attr("href")
-        if (xtgoLink != null) {
-            val fullRedirectUrl = fixUrl(xtgoLink)
-            // The redirect page (e.g., elif.news) contains the actual streaming player
-            val serverPageDoc = runCatching { 
-                app.get(fullRedirectUrl, referer = watchUrl).document 
-            }.getOrNull()
-            
-            if (serverPageDoc != null) {
-                // Look for streaming servers in the #sServer list or similar containers
-                serverPageDoc.select("#sServer li, .WatchList li").forEach { li ->
-                    val serverName = li.text().trim()
-                    // The actual stream URL is often in a data attribute or a hidden link
-                    val serverUrl = li.attr("data-url").ifEmpty { li.selectFirst("a")?.attr("href") }.orEmpty()
-                    
-                    if (serverUrl.isNotEmpty() && serverUrl.startsWith("http")) {
+        val vid = Regex("vid=([A-Za-z0-9]+)")
+            .find(watchUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return false
+
+        val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
+
+        val doc = runCatching {
+            app.get(downloadsUrl, referer = watchUrl).document
+        }.getOrNull() ?: return false
+
+        val allLinks = doc.select("a[href]")
+            .mapNotNull { fixUrlNull(it.attr("href").trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
+
+        val externalLinks = allLinks
+            .filter { !it.startsWith(mainUrl) && !it.contains("cimalight", ignoreCase = true) }
+            .distinct()
+
+        externalLinks.forEach { link ->
+            runCatching {
+                // ✅ Special: MultiUp page often contains multiple mirrors
+                if (link.contains("multiup.io", ignoreCase = true)) {
+                    val multiDoc = app.get(link, referer = downloadsUrl).document
+
+                    val mirrors = multiDoc.select("a[href]")
+                        .mapNotNull { fixUrlNull(it.attr("href").trim()) }
+                        .filter { it.startsWith("http") }
+                        .filter { !it.contains("multiup.io", ignoreCase = true) }
+                        .distinct()
+                        .take(20)
+
+                    mirrors.forEach { mirror ->
                         runCatching {
-                            // Use loadExtractor to resolve the streaming hoster (e.g., Uqload, Supervideo)
-                            loadExtractor(serverUrl, fullRedirectUrl, subtitleCallback, callback)
-                            linksFound++
+                            loadExtractor(mirror, link, subtitleCallback, callback)
                         }
                     }
-                }
-                
-                // Also check for any iframes that might be the direct player
-                serverPageDoc.select("iframe[src]").forEach { iframe ->
-                    val src = fixUrl(iframe.attr("src"))
-                    if (!src.contains("google") && !src.contains("facebook")) {
-                        runCatching {
-                            loadExtractor(src, fullRedirectUrl, subtitleCallback, callback)
-                            linksFound++
-                        }
-                    }
+                } else {
+                    // ✅ Normal: send hoster page to cloudstream extractor system
+                    loadExtractor(link, downloadsUrl, subtitleCallback, callback)
                 }
             }
         }
 
-        // 2. Fallback: Scrape the downloads.php page for additional hosters
-        // Even though these are 'download' links, many hosters (like Updown, Multiup) 
-        // provide a streaming player on their landing page which CloudStream can extract.
-        val vid = Regex("vid=([A-Za-z0-9]+)").find(watchUrl)?.groupValues?.getOrNull(1)
-        if (vid != null) {
-            val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
-            val downloadDoc = runCatching { 
-                app.get(downloadsUrl, referer = watchUrl).document 
-            }.getOrNull()
-            
-            downloadDoc?.select("a[href]")?.forEach { a ->
-                val link = fixUrl(a.attr("href"))
-                if (!link.startsWith(mainUrl) && !link.contains("cimalight") && link.startsWith("http")) {
-                    runCatching {
-                        loadExtractor(link, downloadsUrl, subtitleCallback, callback)
-                        linksFound++
-                    }
-                }
-            }
-        }
-
-        return linksFound > 0
+        return externalLinks.isNotEmpty()
     }
 }
