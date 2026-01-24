@@ -5,86 +5,104 @@ import com.lagradost.cloudstream3.utils.*
 
 class WeCimaProvider : MainAPI() {
 
+    // ✅ Domain اللي شغال عندك
     override var mainUrl = "https://wecima.date"
+
+    // ✅ اسم صحيح (حتى لا يطلع MyCima بالغلط)
     override var name = "WeCima"
     override var lang = "ar"
-    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+
+    override var supportedTypes = setOf(
+        TvType.Movie,
+        TvType.TvSeries
+    )
+
     override var hasMainPage = true
 
+    // ✅ Headers تساعد الموقع يرد مثل المتصفح
     private val safeHeaders = mapOf(
         "User-Agent" to USER_AGENT,
-        "Referer" to "$mainUrl/"
+        "Referer" to mainUrl
     )
 
     override val mainPage = mainPageOf(
-        "$mainUrl/movies/" to "أفلام",
-        "$mainUrl/series/" to "مسلسلات",
-        "$mainUrl/cartoon/" to "أنمي و كرتون"
+        mainUrl to "الرئيسية"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(request.data, headers = safeHeaders).document
+        val doc = app.get(request.data, headers = safeHeaders).document
 
-        val items = document.select("div.GridItem").mapNotNull { element ->
-            val a = element.selectFirst("a[href]") ?: return@mapNotNull null
-            val title = element.selectFirst("strong")?.text()?.trim()
-                ?: a.attr("title")?.trim().orEmpty()
+        val items = doc.select(
+            "article, div.GridItem, div.Item, div.BlockItem, div.col-md-2, div.col-xs-6, li, .movie, .post, .item"
+        ).mapNotNull { el ->
 
-            val link = fixUrl(a.attr("href").trim())
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+            val a = el.selectFirst("a[href]") ?: return@mapNotNull null
+            val url = fixUrl(a.attr("href"))
 
-            var poster = element.selectFirst("div.BG--GridItem")?.attr("data-image")
-            if (poster.isNullOrBlank()) {
-                val style = element.selectFirst("div.BG--GridItem")?.attr("style") ?: ""
-                poster = style.substringAfter("url(").substringBefore(")").trim('"').trim('\'')
-            }
-
-            if (poster.isNullOrBlank() || poster.length < 5) {
-                poster = element.selectFirst("img")?.let {
-                    it.attr("data-src").ifBlank { it.attr("src") }
+            // ✅ استخراج عنوان قوي لأن كثير مرات a.text فاضي
+            val img = el.selectFirst("img")
+            val title =
+                a.attr("title").trim().ifBlank {
+                    img?.attr("alt")?.trim().orEmpty().ifBlank {
+                        el.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim().orEmpty()
+                    }
                 }
+
+            if (title.isBlank()) return@mapNotNull null
+
+            val poster = img?.attr("src")?.ifBlank {
+                img.attr("data-src").ifBlank { img.attr("data-image") }
             }
 
-            newMovieSearchResponse(title, link, TvType.Movie) {
+            newMovieSearchResponse(title, url, TvType.Movie) {
                 posterUrl = fixUrlNull(poster)
             }
-        }
+        }.distinctBy { it.url }
 
         return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
-        val document = app.get("$mainUrl/search/$q", headers = safeHeaders).document
+        val doc = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
 
-        return document.select("div.GridItem").mapNotNull { element ->
-            val a = element.selectFirst("a[href]") ?: return@mapNotNull null
-            val title = element.selectFirst("strong")?.text()?.trim()
-                ?: a.attr("title")?.trim().orEmpty()
+        return doc.select(
+            "article, div.GridItem, div.Item, div.BlockItem, div.col-md-2, div.col-xs-6, li, .movie, .post, .item"
+        ).mapNotNull { el ->
+            val a = el.selectFirst("a[href]") ?: return@mapNotNull null
+            val url = fixUrl(a.attr("href"))
 
-            val link = fixUrl(a.attr("href").trim())
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+            val img = el.selectFirst("img")
+            val title =
+                a.attr("title").trim().ifBlank {
+                    img?.attr("alt")?.trim().orEmpty().ifBlank {
+                        el.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim().orEmpty()
+                    }
+                }
 
-            var poster = element.selectFirst("div.BG--GridItem")?.attr("data-image")
-            if (poster.isNullOrBlank()) {
-                val style = element.selectFirst("div.BG--GridItem")?.attr("style") ?: ""
-                poster = style.substringAfter("url(").substringBefore(")").trim('"').trim('\'')
+            if (title.isBlank()) return@mapNotNull null
+
+            val poster = img?.attr("src")?.ifBlank {
+                img.attr("data-src").ifBlank { img.attr("data-image") }
             }
 
-            newMovieSearchResponse(title, link, TvType.Movie) {
+            newMovieSearchResponse(title, url, TvType.Movie) {
                 posterUrl = fixUrlNull(poster)
             }
-        }
+        }.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url, headers = safeHeaders).document
+        val doc = app.get(url, headers = safeHeaders).document
 
-        val title = document.selectFirst("h1")?.text()?.trim() ?: "WeCima"
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: document.selectFirst("img")?.attr("src")
+        val title = doc.selectFirst("h1")?.text()?.trim()
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: "WeCima"
 
-        val plot = document.selectFirst("div.StoryMovieContent, div.Desc p")?.text()?.trim()
+        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")
+            ?: doc.selectFirst("img")?.attr("src")
+
+        val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             posterUrl = fixUrlNull(poster)
@@ -100,22 +118,56 @@ class WeCimaProvider : MainAPI() {
     ): Boolean {
 
         val watchUrl = data.trim()
-        val document = app.get(watchUrl, headers = safeHeaders).document
+        val doc = app.get(watchUrl, headers = safeHeaders).document
 
-        // ✅ FIXED selector: get real data-url from li or inside buttons/links
-        val serverLinks = document.select("ul.WatchServersList li")
-            .mapNotNull { li ->
-                li.attr("data-url").ifBlank {
-                    li.selectFirst("[data-url]")?.attr("data-url").orEmpty()
+        // ✅ 1) iframes مباشرة (أفضل سيناريو)
+        val iframeLinks = doc.select("iframe[src]")
+            .map { fixUrl(it.attr("src")) }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+        if (iframeLinks.isNotEmpty()) {
+            iframeLinks.forEach { link ->
+                loadExtractor(link, watchUrl, subtitleCallback, callback)
+            }
+            return true
+        }
+
+        // ✅ 2) سيرفرات مخفية داخل data attributes
+        val dataLinks = doc.select("[data-embed-url], [data-url], [data-href]")
+            .mapNotNull { el ->
+                el.attr("data-embed-url").ifBlank {
+                    el.attr("data-url").ifBlank {
+                        el.attr("data-href")
+                    }
                 }.takeIf { it.isNotBlank() }
             }
             .map { fixUrl(it) }
             .distinct()
 
-        serverLinks.forEach { link ->
-            loadExtractor(link, watchUrl, subtitleCallback, callback)
+        if (dataLinks.isNotEmpty()) {
+            dataLinks.forEach { link ->
+                loadExtractor(link, watchUrl, subtitleCallback, callback)
+            }
+            return true
         }
 
-        return serverLinks.isNotEmpty()
+        // ✅ 3) روابط داخل onclick
+        val onclickLinks = doc.select("[onclick]")
+            .mapNotNull { el ->
+                val oc = el.attr("onclick")
+                Regex("""(https?:\/\/[^'"]+|\/[^'"]+)""").find(oc)?.value
+            }
+            .map { fixUrl(it) }
+            .distinct()
+
+        if (onclickLinks.isNotEmpty()) {
+            onclickLinks.forEach { link ->
+                loadExtractor(link, watchUrl, subtitleCallback, callback)
+            }
+            return true
+        }
+
+        return false
     }
 }
