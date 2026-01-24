@@ -5,30 +5,31 @@ import com.lagradost.cloudstream3.utils.*
 
 class LaroozaProvider : MainAPI() {
 
-    // 1. EXACT URL: "larooza" (double 'o') as you confirmed works on PC
-    // We removed "www" because that often causes the NXDOMAIN error
-    override var mainUrl = "https://larooza.makeup"
+    // 1. EXACT URL from your message (Two 'O's, no 'www')
+    override var mainUrl = "https://larooza.makeup" 
     override var name = "Larooza"
     override var lang = "ar"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // 2. HEADERS: Essential for this site to accept the app
+    // 2. Safe Headers (Required for the site to accept the connection)
     private val safeHeaders = mapOf(
         "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
     )
 
-    // 3. TARGETED MAIN PAGE: Points exactly to "/gaza.20"
+    // 3. MAIN PAGE: Focused exactly on the page that works for you
     override val mainPage = mainPageOf(
-        "$mainUrl/gaza.20" to "الرئيسية"
+        "$mainUrl/gaza.20" to "الرئيسية",
+        "$mainUrl/category/movies/" to "أفلام",
+        "$mainUrl/category/series/" to "مسلسلات"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Pass headers to avoid 403 blocks
+        // Pass the safeHeaders to ensure we look like a browser
         val document = app.get(request.data, headers = safeHeaders).document
 
-        // 4. "CATCH-ALL" SELECTOR: Finds movies even if the site layout varies
-        val items = document.select("div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.item").mapNotNull { element ->
+        // 4. "Catch-All" Selector: Grabs any movie box it finds
+        val items = document.select("div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem").mapNotNull { element ->
             val a = element.selectFirst("a") ?: return@mapNotNull null
             val title = a.text().trim()
             val link = fixUrl(a.attr("href").trim())
@@ -52,7 +53,7 @@ class LaroozaProvider : MainAPI() {
         val q = query.trim().replace(" ", "+")
         val document = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
 
-        return document.select("div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.item").mapNotNull { element ->
+        return document.select("div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem").mapNotNull { element ->
             val a = element.selectFirst("a") ?: return@mapNotNull null
             val title = a.text().trim()
             val link = fixUrl(a.attr("href").trim())
