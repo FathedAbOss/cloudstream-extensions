@@ -72,7 +72,7 @@ class CimaLightProvider : MainAPI() {
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // ✅ IMPORTANT: dataUrl must be WATCH url (so loadLinks can extract vid)
+        // ✅ IMPORTANT: dataUrl must be WATCH url
         return newMovieLoadResponse(
             name = title.ifBlank { "CimaLight" },
             url = url,
@@ -99,13 +99,52 @@ class CimaLightProvider : MainAPI() {
             ?.getOrNull(1)
             ?: return false
 
+        // ✅ STEP 1: Try STREAM servers from play.php first
+        val playUrl = "$mainUrl/play.php?vid=$vid"
+
+        val playDoc = runCatching {
+            app.get(playUrl, referer = watchUrl).document
+        }.getOrNull()
+
+        if (playDoc != null) {
+            val playLinks = mutableListOf<String>()
+
+            // iframe players
+            playLinks += playDoc.select("iframe[src]")
+                .mapNotNull { fixUrlNull(it.attr("src").trim()) }
+
+            // some servers hide in data-embed-url (like Larooza)
+            playLinks += playDoc.select("[data-embed-url]")
+                .mapNotNull { fixUrlNull(it.attr("data-embed-url").trim()) }
+
+            // any direct links
+            playLinks += playDoc.select("a[href]")
+                .mapNotNull { fixUrlNull(it.attr("href").trim()) }
+
+            val externalPlayLinks = playLinks
+                .filter { it.startsWith("http") }
+                .filter { !it.contains("cimalight", ignoreCase = true) }
+                .distinct()
+
+            externalPlayLinks.forEach { link ->
+                runCatching {
+                    loadExtractor(link, playUrl, subtitleCallback, callback)
+                }
+            }
+
+            if (externalPlayLinks.isNotEmpty()) {
+                return true
+            }
+        }
+
+        // ✅ STEP 2 (Fallback): downloads.php links
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
 
-        val doc = runCatching {
+        val downloadsDoc = runCatching {
             app.get(downloadsUrl, referer = watchUrl).document
         }.getOrNull() ?: return false
 
-        val allLinks = doc.select("a[href]")
+        val allLinks = downloadsDoc.select("a[href]")
             .mapNotNull { fixUrlNull(it.attr("href").trim()) }
             .filter { it.startsWith("http") }
             .distinct()
@@ -116,7 +155,7 @@ class CimaLightProvider : MainAPI() {
 
         externalLinks.forEach { link ->
             runCatching {
-                // ✅ Special: MultiUp page often contains multiple mirrors
+                // ✅ MultiUp: expand mirrors
                 if (link.contains("multiup.io", ignoreCase = true)) {
                     val multiDoc = app.get(link, referer = downloadsUrl).document
 
@@ -133,7 +172,6 @@ class CimaLightProvider : MainAPI() {
                         }
                     }
                 } else {
-                    // ✅ Normal: send hoster page to cloudstream extractor system
                     loadExtractor(link, downloadsUrl, subtitleCallback, callback)
                 }
             }
