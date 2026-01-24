@@ -85,6 +85,11 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
+    /**
+     * The core fix for CimaLight.
+     * It scrapes the downloads.php page directly because it contains the most reliable 
+     * list of external hosters (Updown, Multiup, Vikingfile, etc.) that CloudStream can extract.
+     */
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -92,58 +97,52 @@ class CimaLightProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val watchUrl = data.trim()
+        val vid = Regex("vid=([A-Za-z0-9]+)").find(watchUrl)?.groupValues?.getOrNull(1) ?: return false
         
-        // 1. Get the initial watch page
-        val watchDoc = app.get(watchUrl).document
+        // CimaLight's most reliable server list is on the downloads page
+        val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         
-        // 2. Find the redirect link (xtgo) which leads to the real servers (e.g., elif.news)
-        val redirectLink = watchDoc.selectFirst("a.xtgo")?.attr("href") 
-            ?: watchDoc.selectFirst(".video-bibplayer-poster")?.parent()?.attr("href")
+        // We must use the watch page as the referer to bypass basic protection
+        val downloadDoc = runCatching { 
+            app.get(downloadsUrl, referer = watchUrl).document 
+        }.getOrNull() ?: return false
         
-        if (redirectLink != null) {
-            val fullRedirectUrl = fixUrl(redirectLink)
+        var linksFound = 0
+
+        // Scrape all external hoster links from the downloads page
+        downloadDoc.select("a[href]").forEach { a ->
+            val link = fixUrl(a.attr("href"))
             
-            // 3. Navigate to the redirect page (e.g., elif.news)
-            // This page contains the actual server list in <div id="sServer">
-            val serverPage = app.get(fullRedirectUrl, referer = watchUrl).document
-            
-            // 4. Extract servers from the hidden list and send to extractors
-            // The links on this page are often the ones CloudStream extractors can handle
-            serverPage.select("#sServer li").forEach { li ->
-                // In some cases, the server link is in an onclick or data attribute
-                // Here we try to find any usable link within the list item
-                val serverLink = li.selectFirst("a")?.attr("href") ?: li.attr("data-url")
-                if (serverLink.isNotEmpty() && serverLink.startsWith("http")) {
-                    runCatching {
-                        loadExtractor(serverLink, fullRedirectUrl, subtitleCallback, callback)
-                    }
+            // Filter: Must be an external link (not on cimalight domain) and must be a valid URL
+            if (!link.startsWith(mainUrl) && !link.contains("cimalight") && link.startsWith("http")) {
+                runCatching {
+                    // loadExtractor is the correct CloudStream way to handle these hoster pages
+                    loadExtractor(link, downloadsUrl, subtitleCallback, callback)
+                    linksFound++
                 }
             }
-            
-            // Fallback: If the list items don't have direct links, they might trigger AJAX.
-            // However, most CloudStream extractors work best with the direct hoster URLs.
         }
 
-        // 5. COMPREHENSIVE FALLBACK: Scrape the downloads page
-        // This is often the most reliable way to get high-quality servers like Updown, Voe, etc.
-        val vid = Regex("vid=([A-Za-z0-9]+)").find(watchUrl)?.groupValues?.getOrNull(1)
-        if (vid != null) {
-            val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
-            val downloadDoc = runCatching { 
-                app.get(downloadsUrl, referer = watchUrl).document 
-            }.getOrNull()
-            
-            downloadDoc?.select("a[href]")?.forEach { a ->
-                val link = fixUrl(a.attr("href"))
-                // Filter for external hosters only
-                if (!link.startsWith(mainUrl) && !link.contains("cimalight") && link.startsWith("http")) {
-                    runCatching {
-                        loadExtractor(link, downloadsUrl, subtitleCallback, callback)
+        // If no links were found on the downloads page, we try to find the 'xtgo' redirect link
+        // as a secondary source, which often leads to a page like elif.news with more servers.
+        if (linksFound == 0) {
+            val redirectLink = downloadDoc.selectFirst("a.xtgo")?.attr("href")
+            if (redirectLink != null) {
+                val fullRedirectUrl = fixUrl(redirectLink)
+                val serverPage = runCatching { app.get(fullRedirectUrl, referer = downloadsUrl).document }.getOrNull()
+                
+                serverPage?.select("#sServer li")?.forEach { li ->
+                    val serverLink = li.selectFirst("a")?.attr("href") ?: li.attr("data-url")
+                    if (serverLink.isNotEmpty() && serverLink.startsWith("http")) {
+                        runCatching {
+                            loadExtractor(serverLink, fullRedirectUrl, subtitleCallback, callback)
+                            linksFound++
+                        }
                     }
                 }
             }
         }
 
-        return true
+        return linksFound > 0
     }
 }
