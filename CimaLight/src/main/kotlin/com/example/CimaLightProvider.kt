@@ -107,6 +107,7 @@ class CimaLightProvider : MainAPI() {
         }.getOrNull()
 
         if (playDoc != null) {
+
             val playLinks = mutableListOf<String>()
 
             // iframe players
@@ -121,18 +122,54 @@ class CimaLightProvider : MainAPI() {
             playLinks += playDoc.select("a[href]")
                 .mapNotNull { fixUrlNull(it.attr("href").trim()) }
 
-            val externalPlayLinks = playLinks
+            val httpLinks = playLinks
                 .filter { it.startsWith("http") }
+                .distinct()
+
+            // ✅ split internal/external
+            val externalPlayLinks = httpLinks
                 .filter { !it.contains("cimalight", ignoreCase = true) }
                 .distinct()
 
+            val internalPlayLinks = httpLinks
+                .filter { it.contains("cimalight", ignoreCase = true) }
+                .distinct()
+                .take(15)
+
+            // ✅ external directly
             externalPlayLinks.forEach { link ->
                 runCatching {
                     loadExtractor(link, playUrl, subtitleCallback, callback)
                 }
             }
 
-            if (externalPlayLinks.isNotEmpty()) {
+            // ✅ NEW FIX: follow internal play links 1 step to find real external hosters
+            internalPlayLinks.forEach { internal ->
+                runCatching {
+                    val doc2 = app.get(internal, referer = playUrl).document
+
+                    val secondLinks = doc2.select("a[href], iframe[src]")
+                        .mapNotNull { el ->
+                            val attr = if (el.hasAttr("href")) el.attr("href") else el.attr("src")
+                            fixUrlNull(attr.trim())
+                        }
+                        .filter { it.startsWith("http") }
+                        .distinct()
+
+                    val externalSecond = secondLinks
+                        .filter { !it.contains("cimalight", ignoreCase = true) }
+                        .distinct()
+
+                    externalSecond.forEach { ext ->
+                        runCatching {
+                            loadExtractor(ext, internal, subtitleCallback, callback)
+                        }
+                    }
+                }
+            }
+
+            // ✅ if we found anything at all, return true
+            if (externalPlayLinks.isNotEmpty() || internalPlayLinks.isNotEmpty()) {
                 return true
             }
         }
