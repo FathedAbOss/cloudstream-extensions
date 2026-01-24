@@ -18,6 +18,10 @@ class CimaLightProvider : MainAPI() {
         "$mainUrl/most.php" to "الأكثر مشاهدة"
     )
 
+    private fun isInternal(url: String): Boolean {
+        return url.startsWith(mainUrl) || url.contains("cimalight", ignoreCase = true)
+    }
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
 
@@ -73,8 +77,18 @@ class CimaLightProvider : MainAPI() {
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        val vid = Regex("vid=([A-Za-z0-9]+)").find(url)?.groupValues?.getOrNull(1)
-        val downloadsUrl = if (vid != null) "$mainUrl/downloads.php?vid=$vid" else url
+        // ✅ 1) försök hitta vid i URL
+        var vid = Regex("vid=([A-Za-z0-9]+)").find(url)?.groupValues?.getOrNull(1)
+
+        // ✅ 2) annars försök hitta vid i HTML (länkar som downloads.php?vid=xxxx)
+        if (vid.isNullOrBlank()) {
+            val vidLink = document.selectFirst("a[href*=\"downloads.php?vid=\"]")?.attr("href")
+            vid = vidLink?.let {
+                Regex("vid=([A-Za-z0-9]+)").find(it)?.groupValues?.getOrNull(1)
+            }
+        }
+
+        val downloadsUrl = if (!vid.isNullOrBlank()) "$mainUrl/downloads.php?vid=$vid" else url
 
         return newMovieLoadResponse(
             name = title.ifBlank { "CimaLight" },
@@ -94,8 +108,18 @@ class CimaLightProvider : MainAPI() {
         val linksIframe = document.select("iframe[src]")
             .mapNotNull { fixUrlNull(it.attr("src").trim()) }
 
-        val linksData = document.select("[data-url], [data-href]")
-            .flatMap { el -> listOf(el.attr("data-url"), el.attr("data-href")) }
+        val linksSource = document.select("source[src], video[src]")
+            .mapNotNull { fixUrlNull(it.attr("src").trim()) }
+
+        val linksData = document.select("[data-url], [data-href], [data-src], [data-link]")
+            .flatMap { el ->
+                listOf(
+                    el.attr("data-url"),
+                    el.attr("data-href"),
+                    el.attr("data-src"),
+                    el.attr("data-link")
+                )
+            }
             .mapNotNull { fixUrlNull(it.trim()) }
 
         val linksOnClick = document.select("[onclick]")
@@ -105,7 +129,18 @@ class CimaLightProvider : MainAPI() {
             }
             .mapNotNull { fixUrlNull(it.trim()) }
 
-        return (linksA + linksIframe + linksData + linksOnClick)
+        // ✅ Script-länkar (många servrar göms här)
+        val linksScript = document.select("script")
+            .map { it.data() + " " + it.html() }
+            .flatMap { scriptText ->
+                Regex("(https?://[^\"'\\s<>]+)")
+                    .findAll(scriptText)
+                    .map { it.value }
+                    .toList()
+            }
+            .mapNotNull { fixUrlNull(it.trim()) }
+
+        return (linksA + linksIframe + linksSource + linksData + linksOnClick + linksScript)
             .filter { it.startsWith("http") }
             .distinct()
     }
@@ -120,9 +155,8 @@ class CimaLightProvider : MainAPI() {
         val doc1 = app.get(data).document
         val firstLinks = extractAllLinks(doc1)
 
-        // externa + interna (vi följer interna 1 steg)
-        val externalLinks = firstLinks.filter { !it.contains(mainUrl) }
-        val internalLinks = firstLinks.filter { it.contains(mainUrl) }.distinct().take(15)
+        val externalLinks = firstLinks.filter { !isInternal(it) }.distinct()
+        val internalLinks = firstLinks.filter { isInternal(it) }.distinct().take(15)
 
         // 1) kör externa direkt
         externalLinks.forEach { link ->
@@ -134,14 +168,16 @@ class CimaLightProvider : MainAPI() {
         // 2) följ interna EN gång och extrahera externa därifrån
         internalLinks.forEach { internal ->
             runCatching {
-                val doc2 = app.get(internal).document
+                val doc2 = app.get(internal, referer = data).document
                 val secondLinks = extractAllLinks(doc2)
-                secondLinks.filter { !it.contains(mainUrl) }.forEach { ext ->
+
+                val secondExternal = secondLinks.filter { !isInternal(it) }.distinct()
+                secondExternal.forEach { ext ->
                     loadExtractor(ext, internal, subtitleCallback, callback)
                 }
             }
         }
 
-        return externalLinks.isNotEmpty() || internalLinks.isNotEmpty()
+        return firstLinks.isNotEmpty()
     }
 }
