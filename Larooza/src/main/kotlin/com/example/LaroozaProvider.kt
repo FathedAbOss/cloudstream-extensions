@@ -2,36 +2,120 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
 
 class LaroozaProvider : MainAPI() {
-    override var mainUrl = "https://larooza.hair/"
+
+    override var mainUrl = "https://larooza.makeup"
     override var name = "Larooza"
-    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries )
     override var lang = "ar"
+    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
+    override val mainPage = mainPageOf(
+        "$mainUrl/" to "الأحدث",
+        "$mainUrl/movies/" to "أفلام",
+        "$mainUrl/series/" to "مسلسلات"
+    )
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get(mainUrl).document
-        val items = document.select("div.video-box").mapNotNull { it.toSearchResult() }
+        val document = app.get(request.data).document
+
+        val items = document.select("h3 a, h2 a").mapNotNull { a ->
+            val title = a.text().trim()
+            val link = fixUrl(a.attr("href"))
+
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+
+            val poster = a.parent()?.parent()
+                ?.selectFirst("img")
+                ?.attr("src")
+                ?.trim()
+                ?.let { fixUrlNull(it) }
+
+            newMovieSearchResponse(title, link, TvType.Movie) {
+                this.posterUrl = poster
+            }
+        }.distinctBy { it.url }
+
         return newHomePageResponse(request.name, items)
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst(".video-title")?.text() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val posterUrl = this.selectFirst("img")?.attr("src")
-        return newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = posterUrl }
-    }
-
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get("$mainUrl/?s=$query").document
-        return document.select("div.video-box").mapNotNull { it.toSearchResult() }
+        val q = query.trim().replace(" ", "+")
+        val document = app.get("$mainUrl/?s=$q").document
+
+        return document.select("h3 a, h2 a").mapNotNull { a ->
+            val title = a.text().trim()
+            val link = fixUrl(a.attr("href"))
+
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+
+            val poster = a.parent()?.parent()
+                ?.selectFirst("img")
+                ?.attr("src")
+                ?.trim()
+                ?.let { fixUrlNull(it) }
+
+            newMovieSearchResponse(title, link, TvType.Movie) {
+                this.posterUrl = poster
+            }
+        }.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        val title = document.selectFirst("h1")?.text() ?: ""
-        return newMovieLoadResponse(title, url, TvType.Movie, url)
+
+        val title = document.selectFirst("h1")?.text()?.trim().orEmpty()
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+            ?.trim()
+            ?.let { fixUrlNull(it) }
+
+        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+        // ✅ IMPORTANT: send watch/video URL as dataUrl
+        return newMovieLoadResponse(
+            name = title.ifBlank { "Larooza" },
+            url = url,
+            type = TvType.Movie,
+            dataUrl = url
+        ) {
+            this.posterUrl = poster
+            this.plot = plot
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String, // watch/video URL
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+
+        val watchUrl = data.trim()
+
+        val vid = Regex("vid=([A-Za-z0-9]+)")
+            .find(watchUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return false
+
+        val playUrl = "$mainUrl/play.php?vid=$vid"
+
+        val doc = runCatching {
+            app.get(playUrl, referer = watchUrl).document
+        }.getOrNull() ?: return false
+
+        val embedLinks = doc.select(".WatchList li[data-embed-url]")
+            .mapNotNull { fixUrlNull(it.attr("data-embed-url").trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
+
+        embedLinks.forEach { link ->
+            runCatching {
+                loadExtractor(link, playUrl, subtitleCallback, callback)
+            }
+        }
+
+        return embedLinks.isNotEmpty()
     }
 }
