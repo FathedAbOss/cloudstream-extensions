@@ -2,60 +2,113 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
 
-class MyCimaProvider : MainAPI() {
-          override var mainUrl = "https://mycima.direct/"
-          override var name = "MyCima"
-          override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-              override var lang = "ar"
-          override var hasMainPage = true
+class WeCimaProvider : MainAPI() {
 
-          override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-                        val document = app.get(mainUrl).document
-                        val sections = document.select("div.GridItem")
-                                val home = sections.mapNotNull {
-                                                  it.toSearchResult()
-                                }
-                                        return newHomePageResponse(request.name, home)
-          }
+    // 1. CLASS NAME CHECK: The line above MUST say "class WeCimaProvider"
+    override var mainUrl = "https://wecima.date" 
+    override var name = "WeCima"
+    override var lang = "ar"
+    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override var hasMainPage = true
 
-              private fun Element.toSearchResult(): SearchResponse? {
-                            val title = this.selectFirst("div.Thumb--Title")?.text() ?: return null
-                            val href = this.selectFirst("a")?.attr("href") ?: return null
-                            val posterUrl = this.selectFirst("span.Thumb--Image")?.attr("style")?.let {
-                                              Regex("url\\((.*)\\)").find(it)?.groupValues?.get(1)
-                            }
-                                    return newMovieSearchResponse(title, href, TvType.Movie) {
-                                                      this.posterUrl = posterUrl
-                                    }
-              }
+    // 2. HEADERS: WeCima needs these to load images properly
+    private val safeHeaders = mapOf(
+        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+        "Referer" to "$mainUrl/"
+    )
 
-                  override suspend fun search(query: String): List<SearchResponse> {
-                                val document = app.get("$mainUrl/search/$query").document
-                                return document.select("div.GridItem").mapNotNull {
-                                                  it.toSearchResult()
-                                }
-                  }
+    override val mainPage = mainPageOf(
+        "$mainUrl/movies/" to "أفلام",
+        "$mainUrl/series/" to "مسلسلات",
+        "$mainUrl/cartoon/" to "أنمي و كرتون"
+    )
 
-                      override suspend fun load(url: String): LoadResponse {
-                                    val document = app.get(url).document
-                                    val title = document.selectFirst("h1")?.text() ?: ""
-                                    val poster = document.selectFirst("div.Post--Image span")?.attr("style")?.let {
-                                                      Regex("url\\((.*)\\)").find(it)?.groupValues?.get(1)
-                                    }
-                                            val plot = document.selectFirst("div.Post--Content")?.text()
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val document = app.get(request.data, headers = safeHeaders).document
 
-                                                            return if (url.contains("series")) {
-                                                                              newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf()) {
-                                                                                                    this.posterUrl = poster
-                                                                                                    this.plot = plot
-                                                                              }
-                                                            } else {
-                                                                              newMovieLoadResponse(title, url, TvType.Movie, url) {
-                                                                                                    this.posterUrl = poster
-                                                                                                    this.plot = plot
-                                                                              }
-                                                            }
-                      }
+        // 3. WECIMA SELECTOR: Correct selectors for WeCima's layout
+        val items = document.select("div.GridItem").mapNotNull { element ->
+            val a = element.selectFirst("a") ?: return@mapNotNull null
+            val title = element.selectFirst("strong")?.text()?.trim() ?: a.attr("title")
+            val link = fixUrl(a.attr("href").trim())
+
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+
+            // Image Extractor
+            var poster = element.selectFirst("div.BG--GridItem")?.attr("data-image")
+            if (poster.isNullOrBlank()) {
+                val style = element.selectFirst("div.BG--GridItem")?.attr("style") ?: ""
+                poster = style.substringAfter("url(").substringBefore(")").trim('"').trim('\'')
+            }
+            
+            if (poster.isNullOrBlank()) {
+                 poster = element.selectFirst("img")?.attr("data-src")
+            }
+
+            newMovieSearchResponse(title, link, TvType.Movie) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+        }
+
+        return newHomePageResponse(request.name, items)
+    }
+
+    override suspend fun search(query: String): List<SearchResponse> {
+        val q = query.trim().replace(" ", "+")
+        val document = app.get("$mainUrl/search/$q", headers = safeHeaders).document
+
+        return document.select("div.GridItem").mapNotNull { element ->
+            val a = element.selectFirst("a") ?: return@mapNotNull null
+            val title = element.selectFirst("strong")?.text()?.trim() ?: a.attr("title")
+            val link = fixUrl(a.attr("href").trim())
+
+            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+
+            var poster = element.selectFirst("div.BG--GridItem")?.attr("data-image")
+            if (poster.isNullOrBlank()) {
+                val style = element.selectFirst("div.BG--GridItem")?.attr("style") ?: ""
+                poster = style.substringAfter("url(").substringBefore(")").trim('"').trim('\'')
+            }
+
+            newMovieSearchResponse(title, link, TvType.Movie) {
+                this.posterUrl = fixUrlNull(poster)
+            }
+        }
+    }
+
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url, headers = safeHeaders).document
+
+        val title = document.selectFirst("h1")?.text()?.trim() ?: "WeCima"
+        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
+        val plot = document.selectFirst("div.StoryMovieContent, div.Desc p")?.text()?.trim()
+
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            this.posterUrl = fixUrlNull(poster)
+            this.plot = plot
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val watchUrl = data.trim()
+        val document = app.get(watchUrl, headers = safeHeaders).document
+
+        // WeCima Server List
+        val serverLinks = document.select("ul.WatchServersList li btn, .WatchServersList a")
+            .mapNotNull { it.attr("data-url").ifBlank { it.attr("href") } }
+            .map { fixUrl(it) }
+            .distinct()
+
+        serverLinks.forEach { link ->
+            loadExtractor(link, watchUrl, subtitleCallback, callback)
+        }
+
+        return serverLinks.isNotEmpty()
+    }
 }
