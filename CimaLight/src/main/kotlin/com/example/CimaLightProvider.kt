@@ -2,6 +2,8 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import org.jsoup.nodes.Document
 
 class CimaLightProvider : MainAPI() {
 
@@ -72,7 +74,6 @@ class CimaLightProvider : MainAPI() {
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // ✅ IMPORTANT: dataUrl must be WATCH url so loadLinks can extract vid
         return newMovieLoadResponse(
             name = title.ifBlank { "CimaLight" },
             url = url,
@@ -84,44 +85,65 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
-    // ✅ FIX: scrape downloads.php?vid=... and send every external hoster link to loadExtractor()
     override suspend fun loadLinks(
-        data: String, // watch URL e.g. https://w.cimalight.co/watch.php?vid=xxxx
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         val watchUrl = data.trim()
+        
+        // 1. Get the initial watch page
+        val watchDoc = app.get(watchUrl).document
+        
+        // 2. Find the redirect link (xtgo) which leads to the real servers (e.g., elif.news)
+        val redirectLink = watchDoc.selectFirst("a.xtgo")?.attr("href") 
+            ?: watchDoc.selectFirst(".video-bibplayer-poster")?.parent()?.attr("href")
+        
+        if (redirectLink != null) {
+            val fullRedirectUrl = fixUrl(redirectLink)
+            
+            // 3. Navigate to the redirect page (e.g., elif.news)
+            // This page contains the actual server list in <div id="sServer">
+            val serverPage = app.get(fullRedirectUrl, referer = watchUrl).document
+            
+            // 4. Extract servers from the hidden list and send to extractors
+            // The links on this page are often the ones CloudStream extractors can handle
+            serverPage.select("#sServer li").forEach { li ->
+                // In some cases, the server link is in an onclick or data attribute
+                // Here we try to find any usable link within the list item
+                val serverLink = li.selectFirst("a")?.attr("href") ?: li.attr("data-url")
+                if (serverLink.isNotEmpty() && serverLink.startsWith("http")) {
+                    runCatching {
+                        loadExtractor(serverLink, fullRedirectUrl, subtitleCallback, callback)
+                    }
+                }
+            }
+            
+            // Fallback: If the list items don't have direct links, they might trigger AJAX.
+            // However, most CloudStream extractors work best with the direct hoster URLs.
+        }
 
-        val vid = Regex("vid=([A-Za-z0-9]+)")
-            .find(watchUrl)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: return false
-
-        val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
-
-        val doc = runCatching {
-            app.get(downloadsUrl, referer = watchUrl).document
-        }.getOrNull() ?: return false
-
-        val allLinks = doc.select("a[href]")
-            .mapNotNull { fixUrlNull(it.attr("href").trim()) }
-            .filter { it.startsWith("http") }
-            .distinct()
-
-        val externalLinks = allLinks
-            .filter { !it.startsWith(mainUrl) && !it.contains("cimalight", ignoreCase = true) }
-            .distinct()
-
-        externalLinks.forEach { link ->
-            runCatching {
-                // 🔥 Cloudstream extractors do the hard work here
-                loadExtractor(link, downloadsUrl, subtitleCallback, callback)
+        // 5. COMPREHENSIVE FALLBACK: Scrape the downloads page
+        // This is often the most reliable way to get high-quality servers like Updown, Voe, etc.
+        val vid = Regex("vid=([A-Za-z0-9]+)").find(watchUrl)?.groupValues?.getOrNull(1)
+        if (vid != null) {
+            val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
+            val downloadDoc = runCatching { 
+                app.get(downloadsUrl, referer = watchUrl).document 
+            }.getOrNull()
+            
+            downloadDoc?.select("a[href]")?.forEach { a ->
+                val link = fixUrl(a.attr("href"))
+                // Filter for external hosters only
+                if (!link.startsWith(mainUrl) && !link.contains("cimalight") && link.startsWith("http")) {
+                    runCatching {
+                        loadExtractor(link, downloadsUrl, subtitleCallback, callback)
+                    }
+                }
             }
         }
 
-        return externalLinks.isNotEmpty()
+        return true
     }
 }
