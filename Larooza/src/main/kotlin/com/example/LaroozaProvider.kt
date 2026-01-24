@@ -5,20 +5,14 @@ import com.lagradost.cloudstream3.utils.*
 
 class LaroozaProvider : MainAPI() {
 
-    override var mainUrl = "https://larooza.makeup"
+    // ✅ FIXED: use WWW domain (matches gaza.20 working link)
+    override var mainUrl = "https://www.larooza.makeup"
     override var name = "Larooza"
     override var lang = "ar"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // ✅ Browser-like headers for HTML requests
     private val safeHeaders = mapOf(
-        "User-Agent" to USER_AGENT,
-        "Referer" to mainUrl
-    )
-
-    // ✅ Poster requests usually need Referer too
-    private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to mainUrl
     )
@@ -33,29 +27,32 @@ class LaroozaProvider : MainAPI() {
         val document = app.get(request.data, headers = safeHeaders).document
 
         val items = document.select(
-            "div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem"
+            // ✅ broader selector
+            "div.BlockItem, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item"
         ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
-
-            // ⚠️ a.text() is often empty on card grids, so we try stronger title sources
-            val title =
-                element.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
-                    ?: a.attr("title")?.trim()
-                    ?: a.text().trim()
-
             val link = fixUrl(a.attr("href").trim())
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+            if (link.isBlank()) return@mapNotNull null
 
+            // ✅ strong title extraction (a.text is often empty)
             val img = element.selectFirst("img")
+            val title =
+                a.attr("title").trim().ifBlank {
+                    img?.attr("alt")?.trim().orEmpty().ifBlank {
+                        element.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim().orEmpty()
+                    }
+                }
+
+            if (title.isBlank()) return@mapNotNull null
+
             val poster = img?.attr("src")?.ifBlank {
                 img.attr("data-src").ifBlank { img.attr("data-image") }
             }
 
             newMovieSearchResponse(title, link, TvType.Movie) {
                 this.posterUrl = fixUrlNull(poster)
-                this.posterHeaders = posterHeaders
             }
-        }
+        }.distinctBy { it.url }
 
         return newHomePageResponse(request.name, items)
     }
@@ -65,28 +62,30 @@ class LaroozaProvider : MainAPI() {
         val document = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
 
         return document.select(
-            "div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem"
+            "div.BlockItem, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item"
         ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
-
-            val title =
-                element.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
-                    ?: a.attr("title")?.trim()
-                    ?: a.text().trim()
-
             val link = fixUrl(a.attr("href").trim())
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+            if (link.isBlank()) return@mapNotNull null
 
             val img = element.selectFirst("img")
+            val title =
+                a.attr("title").trim().ifBlank {
+                    img?.attr("alt")?.trim().orEmpty().ifBlank {
+                        element.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim().orEmpty()
+                    }
+                }
+
+            if (title.isBlank()) return@mapNotNull null
+
             val poster = img?.attr("src")?.ifBlank {
                 img.attr("data-src").ifBlank { img.attr("data-image") }
             }
 
             newMovieSearchResponse(title, link, TvType.Movie) {
                 this.posterUrl = fixUrlNull(poster)
-                this.posterHeaders = posterHeaders
             }
-        }
+        }.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -97,13 +96,12 @@ class LaroozaProvider : MainAPI() {
             ?: "Larooza"
 
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-            ?: document.selectFirst("div.poster img")?.attr("src")
+            ?: document.selectFirst("img")?.attr("src")
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = fixUrlNull(poster)
-            this.posterHeaders = posterHeaders
             this.plot = plot
         }
     }
@@ -114,69 +112,23 @@ class LaroozaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         val watchUrl = data.trim()
         val document = app.get(watchUrl, headers = safeHeaders).document
 
-        // ✅ 1) Direct iframe extraction
-        val iframeLinks = document.select("iframe[src]")
-            .map { fixUrl(it.attr("src")) }
-            .filter { it.isNotBlank() }
-
-        if (iframeLinks.isNotEmpty()) {
-            iframeLinks.forEach { link ->
-                loadExtractor(link, watchUrl, subtitleCallback, callback)
+        // 1) direct iframe
+        val iframes = document.select("iframe[src]").map { it.attr("src") }.filter { it.isNotBlank() }
+        if (iframes.isNotEmpty()) {
+            iframes.forEach { link ->
+                loadExtractor(fixUrl(link), watchUrl, subtitleCallback, callback)
             }
             return true
         }
 
-        // ✅ 2) REAL Larooza servers: WatchList data attributes
-        val watchListLinks = document.select(".WatchList li")
-            .mapNotNull { li ->
-                li.attr("data-embed-url").ifBlank {
-                    li.attr("data-url").ifBlank {
-                        li.attr("data-href").ifBlank {
-                            null
-                        }
-                    }
-                }.takeIf { !it.isNullOrBlank() }
-            }
-            .map { fixUrl(it) }
-
-        if (watchListLinks.isNotEmpty()) {
-            watchListLinks.forEach { link ->
-                loadExtractor(link, watchUrl, subtitleCallback, callback)
-            }
-            return true
-        }
-
-        // ✅ 3) Sometimes link is hidden inside onclick="..."
-        val onclickLinks = document.select("[onclick]")
-            .mapNotNull { el ->
-                val oc = el.attr("onclick")
-                // Grab first URL inside quotes
-                Regex("""(https?:\/\/[^'"]+|\/[^'"]+)""").find(oc)?.value
-            }
-            .map { fixUrl(it) }
-            .distinct()
-
-        if (onclickLinks.isNotEmpty()) {
-            onclickLinks.forEach { link ->
-                loadExtractor(link, watchUrl, subtitleCallback, callback)
-            }
-            return true
-        }
-
-        // ✅ 4) Fallback: if page contains vid=... somewhere, go to play.php
-        val vid = Regex("""vid=([A-Za-z0-9]+)""")
-            .find(document.html())
-            ?.groupValues
-            ?.getOrNull(1)
-
+        // 2) try vid from HTML not from URL
+        val vid = Regex("""vid=([A-Za-z0-9]+)""").find(document.html())?.groupValues?.get(1)
         if (!vid.isNullOrBlank()) {
             val playUrl = "$mainUrl/play.php?vid=$vid"
             val playDoc = app.get(playUrl, headers = safeHeaders).document
-
             playDoc.select("iframe[src]").forEach {
                 loadExtractor(fixUrl(it.attr("src")), playUrl, subtitleCallback, callback)
             }
