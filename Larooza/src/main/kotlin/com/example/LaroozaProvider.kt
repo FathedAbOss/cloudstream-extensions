@@ -2,6 +2,7 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
 
 class LaroozaProvider : MainAPI() {
 
@@ -11,76 +12,64 @@ class LaroozaProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
+    // Define the specific section URL
     private val sectionUrl = "$mainUrl/gaza.20"
 
-    override val mainPage = mainPageOf(
-        sectionUrl to "الرئيسية"
+    // FIX: Used "listOf" instead of "mainPageOf" to guarantee it builds without errors
+    override val mainPage = listOf(
+        MainPageData("الرئيسية", sectionUrl)
     )
 
-    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+    override suspend fun loadMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val document = app.get(request.data).document
 
-        val items = document.select("h3 a, h2 a, .postTitle a, .entry-title a, a[href*=\"vid=\"]")
-            .mapNotNull { a ->
-                val title = a.text().trim()
-                val link = fixUrl(a.attr("href").trim())
-                if (title.isBlank() || link.isBlank()) return@mapNotNull null
-
-                val poster = a.closest("article, li, .movie, .post, .item")
-                    ?.selectFirst("img")
-                    ?.attr("src")
-                    ?.trim()
-                    ?.let { fixUrlNull(it) }
-
-                newMovieSearchResponse(title, link, TvType.Movie) {
-                    this.posterUrl = poster
-                }
-            }
-            .distinctBy { it.url }
+        // IMPROVED LOGIC: Find the "Container" (Box) first, then get details from it.
+        // This is much safer than finding 'a' tags first.
+        val items = document.select("article, li.post, div.movie, div.item, .entry-title").mapNotNull { element ->
+            element.toSearchResult()
+        }
 
         return newHomePageResponse(request.name, items)
+    }
+
+    private fun Element.toSearchResult(): SearchResponse? {
+        // Find the link inside the box
+        val a = this.selectFirst("a") ?: return null
+        val title = a.text().trim()
+        val href = fixUrl(a.attr("href").trim())
+
+        if (title.isBlank() || href.isBlank()) return null
+
+        // Find the image inside the SAME box
+        val poster = this.selectFirst("img")?.let { img ->
+            img.attr("src").ifBlank { img.attr("data-src") }
+        }
+
+        return newMovieSearchResponse(title, href, TvType.Movie) {
+            this.posterUrl = fixUrlNull(poster)
+        }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
         val document = app.get("$sectionUrl/?s=$q").document
 
-        return document.select("h3 a, h2 a, .postTitle a, .entry-title a, a[href*=\"vid=\"]")
-            .mapNotNull { a ->
-                val title = a.text().trim()
-                val link = fixUrl(a.attr("href").trim())
-                if (title.isBlank() || link.isBlank()) return@mapNotNull null
-
-                val poster = a.closest("article, li, .movie, .post, .item")
-                    ?.selectFirst("img")
-                    ?.attr("src")
-                    ?.trim()
-                    ?.let { fixUrlNull(it) }
-
-                newMovieSearchResponse(title, link, TvType.Movie) {
-                    this.posterUrl = poster
-                }
-            }
-            .distinctBy { it.url }
+        return document.select("article, li.post, div.movie, div.item, .entry-title").mapNotNull {
+            it.toSearchResult()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text()?.trim().orEmpty()
+        val title = document.selectFirst("h1")?.text()?.trim() ?: "Larooza"
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-            ?.trim()
-            ?.let { fixUrlNull(it) }
+            ?: document.selectFirst("div.poster img")?.attr("src")
 
-        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
 
-        return newMovieLoadResponse(
-            name = title.ifBlank { "Larooza" },
-            url = url,
-            type = TvType.Movie,
-            dataUrl = url
-        ) {
-            this.posterUrl = poster
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            this.posterUrl = fixUrlNull(poster)
             this.plot = plot
         }
     }
@@ -93,12 +82,7 @@ class LaroozaProvider : MainAPI() {
     ): Boolean {
 
         val watchUrl = data.trim()
-
-        val vid = Regex("vid=([A-Za-z0-9]+)")
-            .find(watchUrl)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?: return false
+        val vid = Regex("vid=([A-Za-z0-9]+)").find(watchUrl)?.groupValues?.get(1) ?: return false
 
         val playUrl = "$mainUrl/play.php?vid=$vid"
 
