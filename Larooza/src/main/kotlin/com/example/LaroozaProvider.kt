@@ -11,7 +11,6 @@ class LaroozaProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // ✅ startsida enligt din adress
     private val sectionUrl = "$mainUrl/gaza.20"
 
     override val mainPage = mainPageOf(
@@ -73,4 +72,51 @@ class LaroozaProvider : MainAPI() {
             ?.trim()
             ?.let { fixUrlNull(it) }
 
-        val plot = document.selectFirst("meta[property=og:description]")?.attr("cont
+        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+        return newMovieLoadResponse(
+            name = title.ifBlank { "Larooza" },
+            url = url,
+            type = TvType.Movie,
+            dataUrl = url
+        ) {
+            this.posterUrl = poster
+            this.plot = plot
+        }
+    }
+
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+
+        val watchUrl = data.trim()
+
+        val vid = Regex("vid=([A-Za-z0-9]+)")
+            .find(watchUrl)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?: return false
+
+        val playUrl = "$mainUrl/play.php?vid=$vid"
+
+        val doc = runCatching {
+            app.get(playUrl, referer = watchUrl).document
+        }.getOrNull() ?: return false
+
+        val embedLinks = doc.select(".WatchList li[data-embed-url]")
+            .mapNotNull { fixUrlNull(it.attr("data-embed-url").trim()) }
+            .filter { it.startsWith("http") }
+            .distinct()
+
+        embedLinks.forEach { link ->
+            runCatching {
+                loadExtractor(link, playUrl, subtitleCallback, callback)
+            }
+        }
+
+        return embedLinks.isNotEmpty()
+    }
+}
