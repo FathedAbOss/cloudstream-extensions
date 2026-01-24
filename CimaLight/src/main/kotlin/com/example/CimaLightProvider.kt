@@ -221,61 +221,43 @@ class CimaLightProvider : MainAPI() {
     // Load Links (Streaming)
     // =========================
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+override suspend fun loadLinks(
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
 
-        val parts = data.split("||", limit = 2)
-        val watchUrl = parts.getOrNull(0)?.trim().orEmpty()
-        val downloadsUrl = parts.getOrNull(1)?.trim().orEmpty()
+    val watchUrl = data.trim()
+    val vid = Regex("vid=([A-Za-z0-9]+)")
+        .find(watchUrl)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?: return false
 
-        suspend fun processPage(pageUrl: String, referer: String): Int {
-            if (pageUrl.isBlank()) return 0
+    val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
 
-            val doc = runCatching { app.get(pageUrl, referer = referer).document }
-                .getOrNull() ?: return 0
+    // IMPORTANT: downloads sometimes needs referer=watchUrl
+    val doc = runCatching { app.get(downloadsUrl, referer = watchUrl).document }
+        .getOrNull() ?: return false
 
-            val links = extractAllLinks(doc)
-            if (links.isEmpty()) return 0
+    // Grab all href links
+    val allLinks = doc.select("a[href]")
+        .mapNotNull { fixUrlNull(it.attr("href").trim()) }
+        .filter { it.startsWith("http") }
+        .distinct()
 
-            val externals = links.filter { !isInternal(it) }.distinct()
-            val internals = links.filter { isInternal(it) }.distinct().take(15)
+    // Filter out internal junk
+    val externalLinks = allLinks
+        .filter { !it.startsWith(mainUrl) && !it.contains("cimalight", ignoreCase = true) }
+        .distinct()
 
-            var found = 0
-
-            // external direct
-            externals.forEach { link ->
-                runCatching {
-                    loadExtractor(link, pageUrl, subtitleCallback, callback)
-                    found++
-                }
-            }
-
-            // follow internal 1 step
-            internals.forEach { internal ->
-                val secondExternal = followInternalOnce(internal, referer = pageUrl)
-                secondExternal.forEach { ext ->
-                    runCatching {
-                        loadExtractor(ext, internal, subtitleCallback, callback)
-                        found++
-                    }
-                }
-            }
-
-            return found
+    // Send to extractors
+    externalLinks.forEach { link ->
+        runCatching {
+            loadExtractor(link, downloadsUrl, subtitleCallback, callback)
         }
-
-        // ✅ 1) STREAM FROM WATCH PAGE FIRST
-        val foundFromWatch = processPage(watchUrl, referer = watchUrl)
-
-        // ✅ 2) If nothing found, try downloads as fallback
-        val foundFromDownloads = if (foundFromWatch == 0) {
-            processPage(downloadsUrl, referer = watchUrl.ifBlank { downloadsUrl })
-        } else 0
-
-        return (foundFromWatch + foundFromDownloads) > 0
     }
+
+    return externalLinks.isNotEmpty()
 }
