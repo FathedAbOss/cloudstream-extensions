@@ -3,89 +3,70 @@ package com.example
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 
-class WeCimaProvider : MainAPI() {
+class MyCimaProvider : MainAPI() {
 
-    // 1. CLASS NAME CHECK: The line above MUST say "class WeCimaProvider"
-    override var mainUrl = "https://wecima.date" 
-    override var name = "WeCima"
+    override var mainUrl = "https://my-cima.club"
+    override var name = "MyCima"
     override var lang = "ar"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // 2. HEADERS: WeCima needs these to load images properly
     private val safeHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+        "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/"
     )
 
     override val mainPage = mainPageOf(
-        "$mainUrl/movies/" to "أفلام",
-        "$mainUrl/series/" to "مسلسلات",
-        "$mainUrl/cartoon/" to "أنمي و كرتون"
+        "$mainUrl/" to "الرئيسية"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data, headers = safeHeaders).document
 
-        // 3. WECIMA SELECTOR: Correct selectors for WeCima's layout
-        val items = document.select("div.GridItem").mapNotNull { element ->
-            val a = element.selectFirst("a") ?: return@mapNotNull null
-            val title = element.selectFirst("strong")?.text()?.trim() ?: a.attr("title")
-            val link = fixUrl(a.attr("href").trim())
+        val items = document.select("article, div.GridItem, div.BlockItem, div.col-md-2, div.col-xs-6, div.movie, li.item")
+            .mapNotNull { element ->
+                val a = element.selectFirst("a[href]") ?: return@mapNotNull null
+                val link = fixUrl(a.attr("href").trim())
 
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
+                val img = element.selectFirst("img")
+                val title =
+                    a.attr("title").trim().ifBlank {
+                        img?.attr("alt")?.trim().orEmpty().ifBlank { a.text().trim() }
+                    }
 
-            // Image Extractor
-            var poster = element.selectFirst("div.BG--GridItem")?.attr("data-image")
-            if (poster.isNullOrBlank()) {
-                val style = element.selectFirst("div.BG--GridItem")?.attr("style") ?: ""
-                poster = style.substringAfter("url(").substringBefore(")").trim('"').trim('\'')
-            }
-            
-            if (poster.isNullOrBlank()) {
-                 poster = element.selectFirst("img")?.attr("data-src")
-            }
+                if (title.isBlank() || link.isBlank()) return@mapNotNull null
 
-            newMovieSearchResponse(title, link, TvType.Movie) {
-                this.posterUrl = fixUrlNull(poster)
+                val poster = img?.attr("src")?.ifBlank {
+                    img.attr("data-src").ifBlank { img.attr("data-image") }
+                }
+
+                newMovieSearchResponse(title, link, TvType.Movie) {
+                    posterUrl = fixUrlNull(poster)
+                }
             }
-        }
+            .distinctBy { it.url }
 
         return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val q = query.trim().replace(" ", "+")
-        val document = app.get("$mainUrl/search/$q", headers = safeHeaders).document
-
-        return document.select("div.GridItem").mapNotNull { element ->
-            val a = element.selectFirst("a") ?: return@mapNotNull null
-            val title = element.selectFirst("strong")?.text()?.trim() ?: a.attr("title")
-            val link = fixUrl(a.attr("href").trim())
-
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
-
-            var poster = element.selectFirst("div.BG--GridItem")?.attr("data-image")
-            if (poster.isNullOrBlank()) {
-                val style = element.selectFirst("div.BG--GridItem")?.attr("style") ?: ""
-                poster = style.substringAfter("url(").substringBefore(")").trim('"').trim('\'')
-            }
-
-            newMovieSearchResponse(title, link, TvType.Movie) {
-                this.posterUrl = fixUrlNull(poster)
-            }
-        }
+        return emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url, headers = safeHeaders).document
 
-        val title = document.selectFirst("h1")?.text()?.trim() ?: "WeCima"
+        val title = document.selectFirst("h1")?.text()?.trim()
+            ?: document.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: "MyCima"
+
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-        val plot = document.selectFirst("div.StoryMovieContent, div.Desc p")?.text()?.trim()
+            ?: document.selectFirst("img")?.attr("src")
+
+        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")
 
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = fixUrlNull(poster)
+            posterUrl = fixUrlNull(poster)
             this.plot = plot
         }
     }
@@ -96,19 +77,19 @@ class WeCimaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+
         val watchUrl = data.trim()
         val document = app.get(watchUrl, headers = safeHeaders).document
 
-        // WeCima Server List
-        val serverLinks = document.select("ul.WatchServersList li btn, .WatchServersList a")
-            .mapNotNull { it.attr("data-url").ifBlank { it.attr("href") } }
-            .map { fixUrl(it) }
+        val iframeLinks = document.select("iframe[src]")
+            .map { fixUrl(it.attr("src")) }
+            .filter { it.isNotBlank() }
             .distinct()
 
-        serverLinks.forEach { link ->
+        iframeLinks.forEach { link ->
             loadExtractor(link, watchUrl, subtitleCallback, callback)
         }
 
-        return serverLinks.isNotEmpty()
+        return iframeLinks.isNotEmpty()
     }
 }
