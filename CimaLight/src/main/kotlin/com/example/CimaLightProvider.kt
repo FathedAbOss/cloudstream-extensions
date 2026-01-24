@@ -2,6 +2,7 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Document
 
 class CimaLightProvider : MainAPI() {
 
@@ -86,14 +87,7 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
-    override suspend fun loadLinks(
-    data: String,
-    isCasting: Boolean,
-    subtitleCallback: (SubtitleFile) -> Unit,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-
-    fun extractAllLinks(document: org.jsoup.nodes.Document): List<String> {
+    private fun extractAllLinks(document: Document): List<String> {
         val linksA = document.select("a[href]")
             .mapNotNull { fixUrlNull(it.attr("href").trim()) }
 
@@ -116,28 +110,38 @@ class CimaLightProvider : MainAPI() {
             .distinct()
     }
 
-    val doc1 = app.get(data).document
-    val firstLinks = extractAllLinks(doc1)
+    override suspend fun loadLinks(
+        data: String,
+        isCasting: Boolean,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
 
-    // Dela upp interna och externa länkar
-    val internalLinks = firstLinks.filter { it.contains(mainUrl) }.take(15) // max 15 för att inte spamma
-    val externalLinks = firstLinks.filter { !it.contains(mainUrl) }
+        val doc1 = app.get(data).document
+        val firstLinks = extractAllLinks(doc1)
 
-    // 1) Försök köra externa direkt
-    externalLinks.forEach { link ->
-        loadExtractor(link, data, subtitleCallback, callback)
-    }
+        // externa + interna (vi följer interna 1 steg)
+        val externalLinks = firstLinks.filter { !it.contains(mainUrl) }
+        val internalLinks = firstLinks.filter { it.contains(mainUrl) }.distinct().take(15)
 
-    // 2) Följ interna länkar EN gång och plocka externa därifrån
-    internalLinks.forEach { internal ->
-        runCatching {
-            val doc2 = app.get(internal).document
-            val secondLinks = extractAllLinks(doc2)
-            secondLinks.filter { !it.contains(mainUrl) }.forEach { ext ->
-                loadExtractor(ext, internal, subtitleCallback, callback)
+        // 1) kör externa direkt
+        externalLinks.forEach { link ->
+            runCatching {
+                loadExtractor(link, data, subtitleCallback, callback)
             }
         }
-    }
 
-    return (externalLinks.isNotEmpty() || internalLinks.isNotEmpty())
+        // 2) följ interna EN gång och extrahera externa därifrån
+        internalLinks.forEach { internal ->
+            runCatching {
+                val doc2 = app.get(internal).document
+                val secondLinks = extractAllLinks(doc2)
+                secondLinks.filter { !it.contains(mainUrl) }.forEach { ext ->
+                    loadExtractor(ext, internal, subtitleCallback, callback)
+                }
+            }
+        }
+
+        return externalLinks.isNotEmpty() || internalLinks.isNotEmpty()
+    }
 }
