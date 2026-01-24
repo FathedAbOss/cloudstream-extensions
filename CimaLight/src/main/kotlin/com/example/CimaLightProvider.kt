@@ -179,50 +179,8 @@ class CimaLightProvider : MainAPI() {
     // Load details
     // =========================
 
-    override suspend fun load(url: String): LoadResponse {
-        val document = app.get(url).document
-
-        val title = document.selectFirst("h1")?.text()?.trim().orEmpty()
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-            ?.trim()
-            ?.let { fixUrlNull(it) }
-
-        val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
-
-        // try vid
-        var vid = Regex("vid=([A-Za-z0-9]+)").find(url)?.groupValues?.getOrNull(1)
-
-        // try get vid from HTML
-        if (vid.isNullOrBlank()) {
-            val vidLink = document.selectFirst("a[href*=\"downloads.php?vid=\"]")?.attr("href")
-            vid = vidLink?.let {
-                Regex("vid=([A-Za-z0-9]+)").find(it)?.groupValues?.getOrNull(1)
-            }
-        }
-
-        val downloadsUrl = if (!vid.isNullOrBlank()) "$mainUrl/downloads.php?vid=$vid" else ""
-
-        // ✅ IMPORTANT:
-        // data = watchUrl || downloadsUrl
-        val dataUrl = "$url||$downloadsUrl"
-
-        return newMovieLoadResponse(
-            name = title.ifBlank { "CimaLight" },
-            url = url,
-            type = TvType.Movie,
-            dataUrl = dataUrl
-        ) {
-            this.posterUrl = poster
-            this.plot = plot
-        }
-    }
-
-    // =========================
-    // Load Links (Streaming)
-    // =========================
-
 override suspend fun loadLinks(
-    data: String,
+    data: String, // watch URL e.g. https://w.cimalight.co/watch.php?vid=xxxx
     isCasting: Boolean,
     subtitleCallback: (SubtitleFile) -> Unit,
     callback: (ExtractorLink) -> Unit
@@ -237,24 +195,22 @@ override suspend fun loadLinks(
 
     val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
 
-    // IMPORTANT: downloads sometimes needs referer=watchUrl
-    val doc = runCatching { app.get(downloadsUrl, referer = watchUrl).document }
-        .getOrNull() ?: return false
+    val doc = runCatching {
+        app.get(downloadsUrl, referer = watchUrl).document
+    }.getOrNull() ?: return false
 
-    // Grab all href links
     val allLinks = doc.select("a[href]")
         .mapNotNull { fixUrlNull(it.attr("href").trim()) }
         .filter { it.startsWith("http") }
         .distinct()
 
-    // Filter out internal junk
     val externalLinks = allLinks
         .filter { !it.startsWith(mainUrl) && !it.contains("cimalight", ignoreCase = true) }
         .distinct()
 
-    // Send to extractors
     externalLinks.forEach { link ->
         runCatching {
+            // key: send hoster page to cloudstream extractors
             loadExtractor(link, downloadsUrl, subtitleCallback, callback)
         }
     }
