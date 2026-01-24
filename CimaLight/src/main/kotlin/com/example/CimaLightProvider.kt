@@ -87,29 +87,22 @@ class CimaLightProvider : MainAPI() {
     }
 
     override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
+    data: String,
+    isCasting: Boolean,
+    subtitleCallback: (SubtitleFile) -> Unit,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
 
-        val document = app.get(data).document
-
+    fun extractAllLinks(document: org.jsoup.nodes.Document): List<String> {
         val linksA = document.select("a[href]")
             .mapNotNull { fixUrlNull(it.attr("href").trim()) }
-            .filter { it.startsWith("http") }
-            .distinct()
 
         val linksIframe = document.select("iframe[src]")
             .mapNotNull { fixUrlNull(it.attr("src").trim()) }
-            .filter { it.startsWith("http") }
-            .distinct()
 
         val linksData = document.select("[data-url], [data-href]")
             .flatMap { el -> listOf(el.attr("data-url"), el.attr("data-href")) }
             .mapNotNull { fixUrlNull(it.trim()) }
-            .filter { it.startsWith("http") }
-            .distinct()
 
         val linksOnClick = document.select("[onclick]")
             .mapNotNull { el ->
@@ -117,15 +110,34 @@ class CimaLightProvider : MainAPI() {
                 Regex("(https?://[^'\"\\s]+)").find(on)?.value
             }
             .mapNotNull { fixUrlNull(it.trim()) }
+
+        return (linksA + linksIframe + linksData + linksOnClick)
             .filter { it.startsWith("http") }
             .distinct()
-
-        val allLinks = (linksA + linksIframe + linksData + linksOnClick).distinct()
-
-        allLinks.forEach { link ->
-            loadExtractor(link, data, subtitleCallback, callback)
-        }
-
-        return allLinks.isNotEmpty()
     }
+
+    val doc1 = app.get(data).document
+    val firstLinks = extractAllLinks(doc1)
+
+    // Dela upp interna och externa länkar
+    val internalLinks = firstLinks.filter { it.contains(mainUrl) }.take(15) // max 15 för att inte spamma
+    val externalLinks = firstLinks.filter { !it.contains(mainUrl) }
+
+    // 1) Försök köra externa direkt
+    externalLinks.forEach { link ->
+        loadExtractor(link, data, subtitleCallback, callback)
+    }
+
+    // 2) Följ interna länkar EN gång och plocka externa därifrån
+    internalLinks.forEach { internal ->
+        runCatching {
+            val doc2 = app.get(internal).document
+            val secondLinks = extractAllLinks(doc2)
+            secondLinks.filter { !it.contains(mainUrl) }.forEach { ext ->
+                loadExtractor(ext, internal, subtitleCallback, callback)
+            }
+        }
+    }
+
+    return (externalLinks.isNotEmpty() || internalLinks.isNotEmpty())
 }
