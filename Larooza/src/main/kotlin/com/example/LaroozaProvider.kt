@@ -12,15 +12,14 @@ class LaroozaProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override var hasMainPage = true
 
-    // Simplified MainPage logic using the standard "mainPageOf"
     override val mainPage = mainPageOf(
         "$mainUrl/gaza.20" to "الرئيسية"
     )
 
-    override suspend fun loadMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
+    // FIXED: Changed "loadMainPage" to "getMainPage" to fix the build error
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
 
-        // Logic inlined here to prevent scope/compiler errors
         val items = document.select("article, li.post, div.movie, div.item, .entry-title").mapNotNull { element ->
             val a = element.selectFirst("a") ?: return@mapNotNull null
             val title = a.text().trim()
