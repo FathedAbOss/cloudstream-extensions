@@ -5,8 +5,8 @@ import com.lagradost.cloudstream3.utils.*
 
 class LaroozaProvider : MainAPI() {
 
-    // ✅ FIXED: use WWW domain (matches gaza.20 working link)
-    override var mainUrl = "https://www.larooza.makeup"
+    // ✅ FIX: NO WWW (because Cloudstream can't resolve www.larooza.makeup)
+    override var mainUrl = "https://larooza.makeup"
     override var name = "Larooza"
     override var lang = "ar"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
@@ -27,19 +27,17 @@ class LaroozaProvider : MainAPI() {
         val document = app.get(request.data, headers = safeHeaders).document
 
         val items = document.select(
-            // ✅ broader selector
             "div.BlockItem, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item"
         ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
             val link = fixUrl(a.attr("href").trim())
             if (link.isBlank()) return@mapNotNull null
 
-            // ✅ strong title extraction (a.text is often empty)
             val img = element.selectFirst("img")
             val title =
                 a.attr("title").trim().ifBlank {
                     img?.attr("alt")?.trim().orEmpty().ifBlank {
-                        element.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim().orEmpty()
+                        a.text().trim()
                     }
                 }
 
@@ -72,7 +70,7 @@ class LaroozaProvider : MainAPI() {
             val title =
                 a.attr("title").trim().ifBlank {
                     img?.attr("alt")?.trim().orEmpty().ifBlank {
-                        element.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim().orEmpty()
+                        a.text().trim()
                     }
                 }
 
@@ -116,7 +114,10 @@ class LaroozaProvider : MainAPI() {
         val document = app.get(watchUrl, headers = safeHeaders).document
 
         // 1) direct iframe
-        val iframes = document.select("iframe[src]").map { it.attr("src") }.filter { it.isNotBlank() }
+        val iframes = document.select("iframe[src]")
+            .map { it.attr("src") }
+            .filter { it.isNotBlank() }
+
         if (iframes.isNotEmpty()) {
             iframes.forEach { link ->
                 loadExtractor(fixUrl(link), watchUrl, subtitleCallback, callback)
@@ -124,11 +125,16 @@ class LaroozaProvider : MainAPI() {
             return true
         }
 
-        // 2) try vid from HTML not from URL
-        val vid = Regex("""vid=([A-Za-z0-9]+)""").find(document.html())?.groupValues?.get(1)
+        // 2) try vid from HTML
+        val vid = Regex("""vid=([A-Za-z0-9]+)""")
+            .find(document.html())
+            ?.groupValues
+            ?.getOrNull(1)
+
         if (!vid.isNullOrBlank()) {
             val playUrl = "$mainUrl/play.php?vid=$vid"
             val playDoc = app.get(playUrl, headers = safeHeaders).document
+
             playDoc.select("iframe[src]").forEach {
                 loadExtractor(fixUrl(it.attr("src")), playUrl, subtitleCallback, callback)
             }
