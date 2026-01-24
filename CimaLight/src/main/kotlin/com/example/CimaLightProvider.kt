@@ -20,9 +20,115 @@ class CimaLightProvider : MainAPI() {
         "$mainUrl/most.php" to "الأكثر مشاهدة"
     )
 
+    // =========================
+    // Helpers
+    // =========================
+
     private fun isInternal(url: String): Boolean {
         return url.startsWith(mainUrl) || url.contains("cimalight", ignoreCase = true)
     }
+
+    private fun safeDecode(text: String): String {
+        return runCatching { URLDecoder.decode(text, "UTF-8") }.getOrElse { text }
+    }
+
+    private fun tryBase64ToUrl(raw: String): String? {
+        val s = raw.trim().replace("\\/", "/")
+        if (s.length < 16) return null
+
+        val base64Like = Regex("^[A-Za-z0-9+/=]{16,}$").matches(s)
+        if (!base64Like) return null
+
+        return runCatching {
+            val decoded = String(Base64.getDecoder().decode(s)).trim()
+            if (decoded.startsWith("http")) decoded else null
+        }.getOrNull()
+    }
+
+    private fun extractAllLinks(document: Document): List<String> {
+        val candidates = mutableListOf<String>()
+
+        // Direct links
+        candidates += document.select("a[href]").map { it.attr("href") }
+        candidates += document.select("iframe[src]").map { it.attr("src") }
+        candidates += document.select("source[src], video[src]").map { it.attr("src") }
+
+        // Data attributes
+        candidates += document.select("[data-url], [data-href], [data-src], [data-link], [data-embed], [data-iframe]")
+            .flatMap { el ->
+                listOf(
+                    el.attr("data-url"),
+                    el.attr("data-href"),
+                    el.attr("data-src"),
+                    el.attr("data-link"),
+                    el.attr("data-embed"),
+                    el.attr("data-iframe")
+                )
+            }
+
+        // onclick
+        candidates += document.select("[onclick]").map { it.attr("onclick") }
+
+        // scripts text
+        val scriptText = document.select("script")
+            .joinToString("\n") { it.data() + "\n" + it.html() }
+
+        // URLs inside scripts
+        candidates += Regex("(https?://[^\"'\\s<>]+)")
+            .findAll(scriptText)
+            .map { it.value }
+            .toList()
+
+        // "file":"..." / "src":"..." / "url":"..."
+        candidates += Regex("\"(file|src|url)\"\\s*:\\s*\"(.*?)\"")
+            .findAll(scriptText)
+            .map { it.groupValues.getOrNull(2).orEmpty() }
+            .toList()
+
+        val out = mutableSetOf<String>()
+
+        candidates.forEach { raw ->
+            val cleaned = raw.trim()
+            if (cleaned.isBlank()) return@forEach
+
+            // If it's onclick, try pick URL from it
+            val insideUrl = Regex("(https?://[^'\"\\s<>]+)").find(cleaned)?.value
+            val maybe = insideUrl ?: cleaned
+
+            val decoded = safeDecode(maybe)
+            val fixed = fixUrlNull(decoded)?.trim()
+
+            if (fixed != null && fixed.startsWith("http")) {
+                out.add(fixed)
+            } else {
+                val b64 = tryBase64ToUrl(decoded)
+                if (b64 != null) out.add(b64)
+            }
+        }
+
+        return out.toList().distinct()
+    }
+
+    private suspend fun followInternalOnce(internalUrl: String, referer: String): List<String> {
+        return runCatching {
+            val res = app.get(internalUrl, referer = referer)
+
+            // redirect to external directly
+            val finalUrl = res.url
+            if (finalUrl.startsWith("http") && !isInternal(finalUrl)) {
+                return@runCatching listOf(finalUrl)
+            }
+
+            val doc = res.document
+            val links = extractAllLinks(doc)
+
+            links.filter { !isInternal(it) }.distinct()
+        }.getOrElse { emptyList() }
+    }
+
+    // =========================
+    // Main Page / Search
+    // =========================
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data).document
@@ -69,6 +175,10 @@ class CimaLightProvider : MainAPI() {
         }.distinctBy { it.url }
     }
 
+    // =========================
+    // Load details
+    // =========================
+
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
 
@@ -79,10 +189,10 @@ class CimaLightProvider : MainAPI() {
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // 1) try find vid in URL
+        // try vid
         var vid = Regex("vid=([A-Za-z0-9]+)").find(url)?.groupValues?.getOrNull(1)
 
-        // 2) else try find vid inside HTML
+        // try get vid from HTML
         if (vid.isNullOrBlank()) {
             val vidLink = document.selectFirst("a[href*=\"downloads.php?vid=\"]")?.attr("href")
             vid = vidLink?.let {
@@ -90,122 +200,26 @@ class CimaLightProvider : MainAPI() {
             }
         }
 
-        val downloadsUrl = if (!vid.isNullOrBlank()) "$mainUrl/downloads.php?vid=$vid" else url
+        val downloadsUrl = if (!vid.isNullOrBlank()) "$mainUrl/downloads.php?vid=$vid" else ""
+
+        // ✅ IMPORTANT:
+        // data = watchUrl || downloadsUrl
+        val dataUrl = "$url||$downloadsUrl"
 
         return newMovieLoadResponse(
             name = title.ifBlank { "CimaLight" },
             url = url,
             type = TvType.Movie,
-            dataUrl = downloadsUrl
+            dataUrl = dataUrl
         ) {
             this.posterUrl = poster
             this.plot = plot
         }
     }
 
-    // --------- Helpers for better extraction ----------
-
-    private fun safeDecode(text: String): String {
-        return runCatching { URLDecoder.decode(text, "UTF-8") }.getOrElse { text }
-    }
-
-    private fun tryBase64ToUrl(raw: String): String? {
-        val s = raw.trim().replace("\\/", "/")
-        if (s.length < 16) return null
-
-        // base64-ish check (cheap)
-        val base64Like = Regex("^[A-Za-z0-9+/=]{16,}$").matches(s)
-        if (!base64Like) return null
-
-        return runCatching {
-            val decoded = String(Base64.getDecoder().decode(s)).trim()
-            if (decoded.startsWith("http")) decoded else null
-        }.getOrNull()
-    }
-
-    private fun extractAllLinks(document: Document): List<String> {
-        val candidates = mutableListOf<String>()
-
-        // normal direct links
-        candidates += document.select("a[href]")
-            .map { it.attr("href") }
-
-        candidates += document.select("iframe[src]")
-            .map { it.attr("src") }
-
-        candidates += document.select("source[src], video[src]")
-            .map { it.attr("src") }
-
-        // data attributes (common for buttons/servers)
-        candidates += document.select("[data-url], [data-href], [data-src], [data-link], [data-embed]")
-            .flatMap { el ->
-                listOf(
-                    el.attr("data-url"),
-                    el.attr("data-href"),
-                    el.attr("data-src"),
-                    el.attr("data-link"),
-                    el.attr("data-embed")
-                )
-            }
-
-        // onclick may contain url or encoded string
-        candidates += document.select("[onclick]")
-            .map { it.attr("onclick") }
-
-        // scripts: pull strings that look like urls or fields: file/src/url
-        val scriptText = document.select("script").joinToString("\n") { it.data() + "\n" + it.html() }
-        candidates += Regex("(https?://[^\"'\\s<>]+)").findAll(scriptText).map { it.value }.toList()
-        candidates += Regex("\"(file|src|url)\"\\s*:\\s*\"(.*?)\"").findAll(scriptText)
-            .map { it.groupValues.getOrNull(2).orEmpty() }
-            .toList()
-
-        // cleanup -> fix -> decode -> also attempt base64 decode
-        val out = mutableSetOf<String>()
-
-        candidates.forEach { raw ->
-            val cleaned = raw.trim()
-            if (cleaned.isBlank()) return@forEach
-
-            // If it's onclick text, try pull URL inside it
-            val insideUrl = Regex("(https?://[^'\"\\s<>]+)").find(cleaned)?.value
-            val maybe = insideUrl ?: cleaned
-
-            // URL decode + fixUrlNull
-            val decoded = safeDecode(maybe)
-            val fixed = fixUrlNull(decoded)?.trim()
-
-            if (fixed != null && fixed.startsWith("http")) {
-                out.add(fixed)
-            } else {
-                // base64 attempt (very common)
-                val b64 = tryBase64ToUrl(decoded)
-                if (b64 != null) out.add(b64)
-            }
-        }
-
-        return out.toList().distinct()
-    }
-
-    // Follow internal links and capture redirects / second-page externals
-    private suspend fun followInternal(internalUrl: String, referer: String): Pair<List<String>, List<String>> {
-        return runCatching {
-            val res = app.get(internalUrl, referer = referer)
-
-            // If internal redirects directly to external
-            val finalUrl = res.url
-            if (finalUrl.startsWith("http") && !isInternal(finalUrl)) {
-                return@runCatching Pair(listOf(finalUrl), emptyList())
-            }
-
-            val doc = res.document
-            val links = extractAllLinks(doc)
-
-            val externals = links.filter { !isInternal(it) }.distinct()
-            val internals = links.filter { isInternal(it) }.distinct()
-
-            Pair(externals, internals)
-        }.getOrElse { Pair(emptyList(), emptyList()) }
-    }
+    // =========================
+    // Load Links (Streaming)
+    // =========================
 
     override suspend fun loadLinks(
         data: String,
@@ -214,52 +228,54 @@ class CimaLightProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        val doc1 = app.get(data).document
-        val firstLinks = extractAllLinks(doc1)
+        val parts = data.split("||", limit = 2)
+        val watchUrl = parts.getOrNull(0)?.trim().orEmpty()
+        val downloadsUrl = parts.getOrNull(1)?.trim().orEmpty()
 
-        val externalLinks = firstLinks.filter { !isInternal(it) }.distinct()
-        val internalLinksLvl1 = firstLinks.filter { isInternal(it) }.distinct()
+        suspend fun processPage(pageUrl: String, referer: String): Int {
+            if (pageUrl.isBlank()) return 0
 
-        // 1) external direct
-        externalLinks.forEach { link ->
-            runCatching {
-                loadExtractor(link, data, subtitleCallback, callback)
-            }
-        }
+            val doc = runCatching { app.get(pageUrl, referer = referer).document }
+                .getOrNull() ?: return 0
 
-        // 2) follow internal up to 2 steps (limited)
-        val visited = mutableSetOf<String>()
+            val links = extractAllLinks(doc)
+            if (links.isEmpty()) return 0
 
-        val lvl2Candidates = mutableListOf<String>()
+            val externals = links.filter { !isInternal(it) }.distinct()
+            val internals = links.filter { isInternal(it) }.distinct().take(15)
 
-        internalLinksLvl1.take(15).forEach { internal ->
-            if (!visited.add(internal)) return@forEach
+            var found = 0
 
-            val (externals, internals) = followInternal(internal, data)
-
-            // Use internal as referer for extracted links (often required)
-            externals.forEach { ext ->
+            // external direct
+            externals.forEach { link ->
                 runCatching {
-                    loadExtractor(ext, internal, subtitleCallback, callback)
+                    loadExtractor(link, pageUrl, subtitleCallback, callback)
+                    found++
                 }
             }
 
-            lvl2Candidates.addAll(internals)
-        }
-
-        // step 2
-        lvl2Candidates.distinct().take(25).forEach { internal2 ->
-            if (!visited.add(internal2)) return@forEach
-
-            val (externals2, _) = followInternal(internal2, data)
-
-            externals2.forEach { ext2 ->
-                runCatching {
-                    loadExtractor(ext2, internal2, subtitleCallback, callback)
+            // follow internal 1 step
+            internals.forEach { internal ->
+                val secondExternal = followInternalOnce(internal, referer = pageUrl)
+                secondExternal.forEach { ext ->
+                    runCatching {
+                        loadExtractor(ext, internal, subtitleCallback, callback)
+                        found++
+                    }
                 }
             }
+
+            return found
         }
 
-        return firstLinks.isNotEmpty()
+        // ✅ 1) STREAM FROM WATCH PAGE FIRST
+        val foundFromWatch = processPage(watchUrl, referer = watchUrl)
+
+        // ✅ 2) If nothing found, try downloads as fallback
+        val foundFromDownloads = if (foundFromWatch == 0) {
+            processPage(downloadsUrl, referer = watchUrl.ifBlank { downloadsUrl })
+        } else 0
+
+        return (foundFromWatch + foundFromDownloads) > 0
     }
 }
