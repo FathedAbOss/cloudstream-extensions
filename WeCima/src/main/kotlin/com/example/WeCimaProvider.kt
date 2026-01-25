@@ -4,8 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import android.util.Base64
-import java.net.URI
 import java.util.LinkedHashMap
 
 class WeCimaProvider : MainAPI() {
@@ -26,7 +24,6 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
-    // ✅ Hotlink protection for posters
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -46,8 +43,12 @@ class WeCimaProvider : MainAPI() {
     )
 
     // ---------------------------
-    // Helpers (Titles + Posters)
+    // Helpers
     // ---------------------------
+
+    private fun normalizeUrl(u: String): String {
+        return u.substringBefore("?").substringBefore("#").trim()
+    }
 
     private fun Element.extractTitleStrong(): String? {
         val h = this.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
@@ -73,7 +74,6 @@ class WeCimaProvider : MainAPI() {
         return fixUrl(s)
     }
 
-    // ✅ Posters for Movies + Series (card + lazy + background-image)
     private fun Element.extractPosterFromCard(): String? {
         val img = this.selectFirst("img")
         cleanUrl(img?.attr("src"))?.let { return it }
@@ -142,8 +142,73 @@ class WeCimaProvider : MainAPI() {
         return result
     }
 
+    private fun Document.extractServersFast(): List<String> {
+        val out = LinkedHashSet<String>()
+
+        // data-watch
+        this.select("li[data-watch], [data-watch]").forEach {
+            val s = it.attr("data-watch").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // iframe
+        this.select("iframe[src]").forEach {
+            val s = it.attr("src").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // fallback
+        this.select("[data-embed-url], [data-url], [data-href]").forEach {
+            val s = it.attr("data-embed-url")
+                .ifBlank { it.attr("data-url") }
+                .ifBlank { it.attr("data-href") }
+                .trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        return out.toList()
+    }
+
+    // ✅ Extract episodes list from series page
+    private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
+        val episodes = LinkedHashSet<Episode>()
+
+        val candidates = this.select(
+            "a[href*=/episode], a[href*=/episodes], a:contains(الحلقة), a:contains(EP), a:contains(Episode)"
+        )
+
+        candidates.forEach { a ->
+            val href = a.attr("href").trim()
+            if (href.isBlank()) return@forEach
+
+            val link = fixUrl(href)
+            if (!link.contains("wecima") && !link.startsWith(mainUrl)) return@forEach
+
+            val name = a.text().trim().ifBlank { "حلقة" }
+
+            // Try parse episode number
+            val epNum = Regex("""(\d{1,4})""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+            episodes.add(
+                Episode(
+                    data = link,
+                    name = name,
+                    season = 1,
+                    episode = epNum
+                )
+            )
+        }
+
+        // fallback: if no episode links found, treat as single playable page
+        if (episodes.isEmpty()) {
+            episodes.add(Episode(data = seriesUrl, name = "مشاهدة", season = 1, episode = 1))
+        }
+
+        return episodes.toList().reversed()
+    }
+
     // ---------------------------
-    // Main Page / Search
+    // MainPage / Search
     // ---------------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -153,7 +218,7 @@ class WeCimaProvider : MainAPI() {
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
         ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
-            val link = fixUrl(a.attr("href").trim())
+            val link = normalizeUrl(fixUrl(a.attr("href").trim()))
 
             val title = element.extractTitleStrong() ?: return@mapNotNull null
             val type = guessTypeFrom(link, title)
@@ -180,7 +245,7 @@ class WeCimaProvider : MainAPI() {
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
         ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
-            val link = fixUrl(a.attr("href").trim())
+            val link = normalizeUrl(fixUrl(a.attr("href").trim()))
 
             val title = element.extractTitleStrong() ?: return@mapNotNull null
             val type = guessTypeFrom(link, title)
@@ -198,7 +263,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Load (Details Page)
+    // Load ✅ FIX SERIES
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
@@ -214,6 +279,18 @@ class WeCimaProvider : MainAPI() {
         val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
         val type = guessTypeFrom(url, title)
 
+        // ✅ SERIES: return episodes list
+        if (type == TvType.TvSeries) {
+            val episodes = doc.extractEpisodes(url)
+
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = fixUrlNull(poster)
+                this.posterHeaders = this@WeCimaProvider.posterHeaders
+                this.plot = plot
+            }
+        }
+
+        // ✅ MOVIE / ANIME MOVIE
         return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
             this.posterHeaders = this@WeCimaProvider.posterHeaders
@@ -222,52 +299,8 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Links Extraction (✅ Full Servers)
+    // LoadLinks ✅ FAST
     // ---------------------------
-
-    private fun decodeAkhbarWorldUrl(watchUrl: String): String? {
-        return try {
-            val uri = URI(watchUrl)
-            val query = uri.query ?: return null
-
-            // parameters can be: mycimafsd=... OR slp_watch=...
-            val encoded = query.split("&")
-                .firstOrNull { it.startsWith("mycimafsd=") || it.startsWith("slp_watch=") }
-                ?.substringAfter("=")
-                ?.trim()
-
-            if (encoded.isNullOrBlank()) return null
-
-            val decodedBytes = Base64.decode(encoded, Base64.DEFAULT)
-            val decoded = String(decodedBytes).trim()
-
-            if (decoded.startsWith("http")) decoded else null
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private suspend fun processWatchUrl(
-        watchUrl: String,
-        pageUrl: String,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        val fixed = watchUrl.trim()
-        if (fixed.isBlank()) return
-
-        // ✅ Case: "مشاهدة مباشرة" via akhbarworld.online?mycimafsd=BASE64
-        if (fixed.contains("akhbarworld.online")) {
-            val decoded = decodeAkhbarWorldUrl(fixed)
-            if (!decoded.isNullOrBlank()) {
-                loadExtractor(decoded, pageUrl, subtitleCallback, callback)
-            }
-            return
-        }
-
-        // ✅ Direct embed links: vk / vinovo / fsdcmo / mixdrop...
-        loadExtractor(fixed, pageUrl, subtitleCallback, callback)
-    }
 
     override suspend fun loadLinks(
         data: String,
@@ -280,17 +313,12 @@ class WeCimaProvider : MainAPI() {
         if (pageUrl.isBlank()) return false
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
-
-        val servers = doc.select("li[data-watch]")
-            .mapNotNull { li ->
-                li.attr("data-watch")?.trim()?.takeIf { it.isNotBlank() }
-            }
-            .distinct()
+        val servers = doc.extractServersFast()
 
         if (servers.isEmpty()) return false
 
-        servers.forEach { url ->
-            processWatchUrl(url, pageUrl, subtitleCallback, callback)
+        servers.forEach { link ->
+            loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
 
         return true
