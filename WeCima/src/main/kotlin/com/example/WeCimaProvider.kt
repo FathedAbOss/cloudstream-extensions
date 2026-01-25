@@ -380,11 +380,11 @@ class WeCimaProvider : MainAPI() {
                 val name = it.text().trim()
                 val epNum = Regex("\\d+").findAll(name).lastOrNull()?.value?.toIntOrNull()
 
-                Episode(
-                    data = fixUrl(href),
-                    name = name,
-                    episode = epNum
-                )
+                // FIX: Use newEpisode instead of deprecated Episode constructor
+                newEpisode(fixUrl(href)) {
+                    this.name = name
+                    this.episode = epNum
+                }
             }.reversed()
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
