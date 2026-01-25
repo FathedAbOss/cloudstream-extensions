@@ -4,8 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.URLDecoder
-import java.util.Base64
 import java.util.LinkedHashMap
 
 class WeCimaProvider : MainAPI() {
@@ -26,6 +24,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
+    // ✅ Hotlink protection for images
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -33,8 +32,8 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
+    // ✅ cache posters so we don't slow down
     private val posterCache = LinkedHashMap<String, String?>()
-    private val linksCache = LinkedHashMap<String, List<String>>()
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الرئيسية (جديد)",
@@ -48,13 +47,6 @@ class WeCimaProvider : MainAPI() {
     // ---------------------------
     // Helpers
     // ---------------------------
-
-    private fun headersWithReferer(ref: String): Map<String, String> {
-        return mapOf(
-            "User-Agent" to USER_AGENT,
-            "Referer" to ref
-        )
-    }
 
     private fun Element.extractTitleStrong(): String? {
         val h = this.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
@@ -80,6 +72,7 @@ class WeCimaProvider : MainAPI() {
         return fixUrl(s)
     }
 
+    // ✅ strong posters (movies + series)
     private fun Element.extractPosterFromCard(): String? {
         val img = this.selectFirst("img")
         cleanUrl(img?.attr("src"))?.let { return it }
@@ -93,12 +86,6 @@ class WeCimaProvider : MainAPI() {
             for (a in lazyAttrs) {
                 cleanUrl(img.attr(a))?.let { return it }
             }
-        }
-
-        val srcset = img?.attr("srcset")?.ifBlank { img.attr("data-srcset") }?.trim()
-        if (!srcset.isNullOrBlank()) {
-            val first = srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
-            cleanUrl(first)?.let { return it }
         }
 
         val holder = this.selectFirst("[data-src], [data-image], [data-bg], [data-background-image]") ?: this
@@ -139,7 +126,7 @@ class WeCimaProvider : MainAPI() {
         if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
 
         val result = try {
-            val d = app.get(detailsUrl, headers = headersWithReferer(mainUrl)).document
+            val d = app.get(detailsUrl, headers = safeHeaders).document
             val og = d.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
             if (!og.isNullOrBlank()) fixUrl(og) else null
         } catch (_: Throwable) {
@@ -154,182 +141,31 @@ class WeCimaProvider : MainAPI() {
         return result
     }
 
-    private fun unwrapProtectedLink(input: String): String {
-        val u = input.trim()
-        val m = Regex("""[?&](url|u|r)=([^&]+)""").find(u)
-        if (m != null) {
-            val encoded = m.groupValues.getOrNull(2)
-            if (!encoded.isNullOrBlank()) {
-                return try { URLDecoder.decode(encoded, "UTF-8") } catch (_: Throwable) { u }
-            }
-        }
-        return u
-    }
-
-    private fun unescapeScriptUrl(s: String): String {
-        return s.replace("\\/", "/").replace("\\u0026", "&")
-    }
-
-    private fun tryDecodeBase64(s: String): String? {
-        return try {
-            val decoded = String(Base64.getDecoder().decode(s))
-            if (decoded.contains("http") || decoded.contains("//")) decoded else null
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun Document.extractPossibleLinks(): List<String> {
+    private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // iframe
+        // ✅ 1) main servers list: data-watch
+        this.select("li[data-watch], [data-watch]").forEach {
+            val s = it.attr("data-watch").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // ✅ 2) iframe direct
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // data-* links
-        val attrs = listOf(
-            "data-watch", "data-url", "data-href", "data-link",
-            "data-embed", "data-embed-url", "data-src", "data-video",
-            "data-player", "data-load", "data-stream", "data-file", "data-iframe"
-        )
-
-        this.select("*").forEach { el ->
-            for (a in attrs) {
-                val v = el.attr(a).trim()
-                if (v.isNotBlank() && (v.contains("http") || v.startsWith("/") || v.startsWith("//"))) {
-                    out.add(fixUrl(v))
-                }
-            }
-        }
-
-        // onclick
-        this.select("[onclick]").forEach { el ->
-            val on = el.attr("onclick")
-            val m = Regex("""(https?://[^\s'"]+|//[^\s'"]+|/[^'"\s]+)""").find(on)
-            val u = m?.value?.trim()
-            if (!u.isNullOrBlank()) out.add(fixUrl(u))
-        }
-
-        // anchors that look like player
-        this.select("a[href]").forEach { a ->
-            val href = a.attr("href").trim()
-            if (
-                href.contains("player") ||
-                href.contains("embed") ||
-                href.contains("watch") ||
-                href.contains("play") ||
-                href.contains("source")
-            ) {
-                out.add(fixUrl(href))
-            }
-        }
-
-        // scripts: urls + base64
-        val scriptsText = this.select("script").joinToString("\n") { it.data() }
-
-        Regex("""(https?:\\?/\\?/[^"'\s]+|https?://[^"'\s]+)""")
-            .findAll(scriptsText)
-            .forEach { m ->
-                val raw = m.value.trim()
-                val clean = unescapeScriptUrl(raw)
-                out.add(fixUrl(clean))
-            }
-
-        Regex("""['"]([A-Za-z0-9+/]{40,}={0,2})['"]""")
-            .findAll(scriptsText)
-            .forEach { m ->
-                val maybe = m.groupValues[1]
-                val decoded = tryDecodeBase64(maybe)
-                if (!decoded.isNullOrBlank()) {
-                    Regex("""(https?://[^"'\s]+|//[^"'\s]+)""")
-                        .findAll(decoded)
-                        .forEach { urlMatch ->
-                            out.add(fixUrl(urlMatch.value))
-                        }
-                }
-            }
-
-        return out.toList()
-    }
-
-    private suspend fun crawlResolveLinks(startUrl: String, maxDepth: Int = 4): List<String> {
-        if (linksCache.containsKey(startUrl)) return linksCache[startUrl] ?: emptyList()
-
-        val visited = HashSet<String>()
-        val queue = ArrayDeque<Pair<String, Int>>()
-        val final = LinkedHashSet<String>()
-
-        queue.add(startUrl to 0)
-        visited.add(startUrl)
-
-        while (queue.isNotEmpty()) {
-            val (current, depth) = queue.removeFirst()
-            if (depth > maxDepth) continue
-
-            val cleaned = unwrapProtectedLink(current)
-            val fixed = fixUrl(cleaned)
-
-            val isInternal = fixed.contains("wecima") || fixed.startsWith(mainUrl)
-
-            val doc = try {
-                app.get(fixed, headers = headersWithReferer(startUrl)).document
-            } catch (_: Throwable) {
-                // if we can't open internal page, still keep it if external
-                if (!isInternal) final.add(fixed)
-                continue
-            }
-
-            val newLinks = doc.extractPossibleLinks()
-            for (l in newLinks) {
-                val fx = fixUrl(unwrapProtectedLink(l))
-                if (fx.isBlank()) continue
-                if (visited.add(fx)) {
-                    queue.add(fx to (depth + 1))
-                }
-            }
-
-            // ✅ If this is external already, store it
-            if (!isInternal) final.add(fixed)
-        }
-
-        val result = final.toList()
-
-        if (linksCache.size > 200) {
-            val firstKey = linksCache.keys.firstOrNull()
-            if (firstKey != null) linksCache.remove(firstKey)
-        }
-        linksCache[startUrl] = result
-        return result
-    }
-
-    // ✅ NEW: resolve internal player pages into real iframes
-    private suspend fun resolveWeCimaInternalToExternal(url: String, referer: String): List<String> {
-        val out = LinkedHashSet<String>()
-        val fixed = fixUrl(url)
-
-        // if already external -> return directly
-        val isInternal = fixed.contains("wecima") || fixed.startsWith(mainUrl)
-        if (!isInternal) return listOf(fixed)
-
-        val doc = try {
-            app.get(fixed, headers = headersWithReferer(referer)).document
-        } catch (_: Throwable) {
-            return emptyList()
-        }
-
-        // iframes
-        doc.select("iframe[src]").forEach {
-            val s = it.attr("src").trim()
+        // ✅ 3) embed url attributes (light)
+        this.select("[data-embed-url], [data-url], [data-href]").forEach {
+            val s = it.attr("data-embed-url")
+                .ifBlank { it.attr("data-url") }
+                .ifBlank { it.attr("data-href") }
+                .trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // any data-watch/data-url again
-        out.addAll(doc.extractPossibleLinks())
-
-        // filter only real urls
-        return out.filter { it.startsWith("http") || it.startsWith("//") }.map { fixUrl(it) }.distinct()
+        return out.toList()
     }
 
     // ---------------------------
@@ -412,7 +248,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks (Fix: missing servers)
+    // LoadLinks ✅ fast + stable
     // ---------------------------
 
     override suspend fun loadLinks(
@@ -425,47 +261,12 @@ class WeCimaProvider : MainAPI() {
         val pageUrl = data.trim()
         if (pageUrl.isBlank()) return false
 
-        val allCandidates = LinkedHashSet<String>()
+        val doc = app.get(pageUrl, headers = safeHeaders).document
+        val servers = doc.extractServersFast()
 
-        // 1) crawl links
-        allCandidates.addAll(crawlResolveLinks(pageUrl, maxDepth = 4))
+        if (servers.isEmpty()) return false
 
-        // 2) open main page and grab more (sometimes servers hidden)
-        val mainDoc = try {
-            app.get(pageUrl, headers = safeHeaders).document
-        } catch (_: Throwable) {
-            null
-        }
-
-        if (mainDoc != null) {
-            allCandidates.addAll(mainDoc.extractPossibleLinks())
-        }
-
-        if (allCandidates.isEmpty()) return false
-
-        val finalToExtract = LinkedHashSet<String>()
-
-        // ✅ Important: resolve internal player pages into real iframe URLs
-        for (u in allCandidates) {
-            val fixed = fixUrl(unwrapProtectedLink(u))
-            if (fixed.isBlank()) continue
-
-            val isInternal = fixed.contains("wecima") || fixed.startsWith(mainUrl)
-            if (isInternal) {
-                val resolved = resolveWeCimaInternalToExternal(fixed, pageUrl)
-                if (resolved.isNotEmpty()) {
-                    finalToExtract.addAll(resolved)
-                } else {
-                    finalToExtract.add(fixed)
-                }
-            } else {
-                finalToExtract.add(fixed)
-            }
-        }
-
-        if (finalToExtract.isEmpty()) return false
-
-        finalToExtract.forEach { link ->
+        servers.forEach { link ->
             loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
 
