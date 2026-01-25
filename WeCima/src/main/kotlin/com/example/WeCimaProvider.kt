@@ -18,12 +18,6 @@ class WeCimaProvider : MainAPI() {
         "Accept-Language" to "ar,en-US;q=0.9,en;q=0.8"
     )
 
-    // ✅ Website has these real sections:
-    // Home = latest
-    // Movies = https://wecima.date/movies/
-    // Series = https://wecima.date/series/
-    // Episodes = https://wecima.date/episodes/
-    // Anime categories exist in filters: افلام انمي / مسلسلات انمي
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الرئيسية (جديد)",
         "$mainUrl/movies/" to "أفلام",
@@ -59,26 +53,22 @@ class WeCimaProvider : MainAPI() {
     }
 
     private fun Element.extractPoster(): String? {
-        // ✅ 1) normal img src
         val img = this.selectFirst("img")
         val p1 = img?.attr("src")?.trim()
         if (!p1.isNullOrBlank()) return fixUrl(p1)
 
-        // ✅ 2) lazy-load attrs
         val lazy = img?.attr("data-src")?.trim()
             ?: img?.attr("data-original")?.trim()
             ?: img?.attr("data-lazy-src")?.trim()
             ?: img?.attr("data-image")?.trim()
         if (!lazy.isNullOrBlank()) return fixUrl(lazy)
 
-        // ✅ 3) srcset first image
         val srcset = img?.attr("srcset")?.trim()
         if (!srcset.isNullOrBlank()) {
             val first = srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
             if (!first.isNullOrBlank()) return fixUrl(first)
         }
 
-        // ✅ 4) background-image style
         val style = this.attr("style")
         if (style.contains("background-image")) {
             val m = Regex("""url\((['"]?)(.*?)\1\)""").find(style)
@@ -86,7 +76,6 @@ class WeCimaProvider : MainAPI() {
             if (!bg.isNullOrBlank()) return fixUrl(bg)
         }
 
-        // ✅ 5) sometimes poster on inner div
         val any = this.selectFirst("[data-src], [data-original], [data-image], [data-lazy-src]")
         val anyPoster = any?.attr("data-src")?.ifBlank { any.attr("data-original") }
             ?.ifBlank { any.attr("data-image") }
@@ -101,12 +90,9 @@ class WeCimaProvider : MainAPI() {
     // ---------------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Most WeCima pages paginate as /page/2/ etc.
         val url = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
-
         val doc = app.get(url, headers = safeHeaders).document
 
-        // ✅ Catch-all: WeCima content blocks differ per page
         val items = doc.select(
             "article, div.BlockItem, div.col-md-2, div.col-xs-6, li.item, div.post, div.box, div.movie"
         ).mapNotNull { el ->
@@ -114,8 +100,7 @@ class WeCimaProvider : MainAPI() {
             val link = el.extractLink() ?: return@mapNotNull null
             val poster = el.extractPoster()
 
-            // Guess type: episodes often have "حلقة"
-            val isEpisode = title.contains("حلقة")
+            val isEpisode = title.contains("حلقة") || link.contains("/episodes/")
             val type = if (isEpisode) TvType.TvSeries else TvType.Movie
 
             newMovieSearchResponse(title, link, type) {
@@ -141,7 +126,10 @@ class WeCimaProvider : MainAPI() {
             val link = el.extractLink() ?: return@mapNotNull null
             val poster = el.extractPoster()
 
-            newMovieSearchResponse(title, link, TvType.Movie) {
+            val isSeries = link.contains("/series/") || title.contains("مسلسل")
+            val type = if (isSeries) TvType.TvSeries else TvType.Movie
+
+            newMovieSearchResponse(title, link, type) {
                 this.posterUrl = fixUrlNull(poster)
             }
         }
@@ -163,8 +151,10 @@ class WeCimaProvider : MainAPI() {
 
         val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // Keep data = url so loadLinks can re-open same page
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        val isSeries = url.contains("/series/") || title.contains("مسلسل")
+        val type = if (isSeries) TvType.TvSeries else TvType.Movie
+
+        return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
             this.plot = plot
         }
@@ -185,35 +175,33 @@ class WeCimaProvider : MainAPI() {
         if (pageUrl.isBlank()) return false
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
-
         val found = LinkedHashSet<String>()
 
-        // ✅ 1) iframes (sometimes exists)
+        // ✅ 1) iframes
         doc.select("iframe[src]").forEach { iframe ->
             val src = iframe.attr("src").trim()
             if (src.isNotBlank()) found.add(fixUrl(src))
         }
 
-        // ✅ 2) Data attributes (WeCima often hides servers like this)
-        doc.select("[data-url], [data-href], [data-embed], [data-embed-url]").forEach { el ->
-            val v = el.attr("data-url").ifBlank { el.attr("data-href") }
+        // ✅ 2) Data attributes (ADDED data-watch - THIS IS THE MAIN FIX)
+        doc.select("[data-url], [data-href], [data-embed], [data-embed-url], [data-watch]").forEach { el ->
+            val v = el.attr("data-watch").ifBlank { el.attr("data-url") }
+                .ifBlank { el.attr("data-href") }
                 .ifBlank { el.attr("data-embed") }
                 .ifBlank { el.attr("data-embed-url") }
                 .trim()
             if (v.isNotBlank()) found.add(fixUrl(v))
         }
 
-        // ✅ 3) onclick="..." (super common)
+        // ✅ 3) onclick="..."
         doc.select("[onclick]").forEach { el ->
             val on = el.attr("onclick")
-            // Extract first URL inside quotes
             val m = Regex("""(https?://[^\s'"]+|//[^\s'"]+)""").find(on)
             val u = m?.value?.trim()
             if (!u.isNullOrBlank()) found.add(fixUrl(u))
         }
 
-        // ✅ 4) Sometimes watch links are internal "play.php?vid=..."
-        // Try to discover vid from page HTML
+        // ✅ 4) Internal play.php
         val html = doc.html()
         val vid = Regex("""vid=([A-Za-z0-9]+)""").find(html)?.groupValues?.getOrNull(1)
         if (!vid.isNullOrBlank()) {
@@ -225,23 +213,26 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
-        // ✅ 5) Last resort: extract ANY http(s) links from scripts (careful but useful)
+        // ✅ 5) Extract from scripts
         doc.select("script").forEach { s ->
             val txt = s.data()
             Regex("""https?://[^\s"']+""").findAll(txt).forEach { m ->
                 val u = m.value.trim()
-                // Filter obvious junk
-                if (!u.contains("google") && !u.contains("facebook")) {
+                if (!u.contains("google") && !u.contains("facebook") && !u.contains("schema.org")) {
                     found.add(u)
                 }
             }
         }
 
-        // ✅ Send all candidates to Cloudstream extractors
         if (found.isEmpty()) return false
 
         found.forEach { link ->
-            loadExtractor(link, pageUrl, subtitleCallback, callback)
+            // Handle common protector/redirector if found
+            val finalLink = if (link.contains("akhbarworld.online?mycimafsd=")) {
+                link.substringAfter("mycimafsd=").let { java.net.URLDecoder.decode(it, "UTF-8") }
+            } else link
+            
+            loadExtractor(finalLink, pageUrl, subtitleCallback, callback)
         }
 
         return true
