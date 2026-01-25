@@ -4,6 +4,8 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import android.util.Base64
+import java.net.URI
 import java.util.LinkedHashMap
 
 class WeCimaProvider : MainAPI() {
@@ -24,7 +26,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
-    // ✅ Hotlink protection for images
+    // ✅ Hotlink protection for posters
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -32,7 +34,6 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
-    // ✅ cache posters so we don't slow down
     private val posterCache = LinkedHashMap<String, String?>()
 
     override val mainPage = mainPageOf(
@@ -45,7 +46,7 @@ class WeCimaProvider : MainAPI() {
     )
 
     // ---------------------------
-    // Helpers
+    // Helpers (Titles + Posters)
     // ---------------------------
 
     private fun Element.extractTitleStrong(): String? {
@@ -72,7 +73,7 @@ class WeCimaProvider : MainAPI() {
         return fixUrl(s)
     }
 
-    // ✅ strong posters (movies + series)
+    // ✅ Posters for Movies + Series (card + lazy + background-image)
     private fun Element.extractPosterFromCard(): String? {
         val img = this.selectFirst("img")
         cleanUrl(img?.attr("src"))?.let { return it }
@@ -141,33 +142,6 @@ class WeCimaProvider : MainAPI() {
         return result
     }
 
-    private fun Document.extractServersFast(): List<String> {
-        val out = LinkedHashSet<String>()
-
-        // ✅ 1) main servers list: data-watch
-        this.select("li[data-watch], [data-watch]").forEach {
-            val s = it.attr("data-watch").trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
-        }
-
-        // ✅ 2) iframe direct
-        this.select("iframe[src]").forEach {
-            val s = it.attr("src").trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
-        }
-
-        // ✅ 3) embed url attributes (light)
-        this.select("[data-embed-url], [data-url], [data-href]").forEach {
-            val s = it.attr("data-embed-url")
-                .ifBlank { it.attr("data-url") }
-                .ifBlank { it.attr("data-href") }
-                .trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
-        }
-
-        return out.toList()
-    }
-
     // ---------------------------
     // Main Page / Search
     // ---------------------------
@@ -224,7 +198,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Load
+    // Load (Details Page)
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
@@ -248,8 +222,52 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks ✅ fast + stable
+    // Links Extraction (✅ Full Servers)
     // ---------------------------
+
+    private fun decodeAkhbarWorldUrl(watchUrl: String): String? {
+        return try {
+            val uri = URI(watchUrl)
+            val query = uri.query ?: return null
+
+            // parameters can be: mycimafsd=... OR slp_watch=...
+            val encoded = query.split("&")
+                .firstOrNull { it.startsWith("mycimafsd=") || it.startsWith("slp_watch=") }
+                ?.substringAfter("=")
+                ?.trim()
+
+            if (encoded.isNullOrBlank()) return null
+
+            val decodedBytes = Base64.decode(encoded, Base64.DEFAULT)
+            val decoded = String(decodedBytes).trim()
+
+            if (decoded.startsWith("http")) decoded else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private suspend fun processWatchUrl(
+        watchUrl: String,
+        pageUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        val fixed = watchUrl.trim()
+        if (fixed.isBlank()) return
+
+        // ✅ Case: "مشاهدة مباشرة" via akhbarworld.online?mycimafsd=BASE64
+        if (fixed.contains("akhbarworld.online")) {
+            val decoded = decodeAkhbarWorldUrl(fixed)
+            if (!decoded.isNullOrBlank()) {
+                loadExtractor(decoded, pageUrl, subtitleCallback, callback)
+            }
+            return
+        }
+
+        // ✅ Direct embed links: vk / vinovo / fsdcmo / mixdrop...
+        loadExtractor(fixed, pageUrl, subtitleCallback, callback)
+    }
 
     override suspend fun loadLinks(
         data: String,
@@ -262,12 +280,17 @@ class WeCimaProvider : MainAPI() {
         if (pageUrl.isBlank()) return false
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
-        val servers = doc.extractServersFast()
+
+        val servers = doc.select("li[data-watch]")
+            .mapNotNull { li ->
+                li.attr("data-watch")?.trim()?.takeIf { it.isNotBlank() }
+            }
+            .distinct()
 
         if (servers.isEmpty()) return false
 
-        servers.forEach { link ->
-            loadExtractor(link, pageUrl, subtitleCallback, callback)
+        servers.forEach { url ->
+            processWatchUrl(url, pageUrl, subtitleCallback, callback)
         }
 
         return true
