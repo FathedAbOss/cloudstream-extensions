@@ -24,7 +24,6 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
-    // ✅ Hotlink protection for images
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -32,7 +31,6 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
-    // ✅ cache posters so we don't slow down
     private val posterCache = LinkedHashMap<String, String?>()
 
     override val mainPage = mainPageOf(
@@ -76,7 +74,6 @@ class WeCimaProvider : MainAPI() {
         return fixUrl(s)
     }
 
-    // ✅ strong posters (movies + series)
     private fun Element.extractPosterFromCard(): String? {
         val img = this.selectFirst("img")
         cleanUrl(img?.attr("src"))?.let { return it }
@@ -148,19 +145,16 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // ✅ 1) main servers list: data-watch
         this.select("li[data-watch], [data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // ✅ 2) iframe direct
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // ✅ 3) embed url attributes (light)
         this.select("[data-embed-url], [data-url], [data-href]").forEach {
             val s = it.attr("data-embed-url")
                 .ifBlank { it.attr("data-url") }
@@ -172,7 +166,7 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ Extract episodes list from series page
+    // ✅ Episodes using newEpisode (no deprecated constructor)
     private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
         val episodes = LinkedHashSet<Episode>()
 
@@ -185,29 +179,25 @@ class WeCimaProvider : MainAPI() {
             if (href.isBlank()) return@forEach
 
             val link = normalizeUrl(fixUrl(href))
-
             val name = a.text().trim().ifBlank { "حلقة" }
             val epNum = Regex("""(\d{1,4})""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
-            episodes.add(
-                Episode(
-                    data = link,
-                    name = name,
-                    season = 1,
-                    episode = epNum
-                )
-            )
+            val ep = newEpisode(link) {
+                this.name = name
+                this.season = 1
+                this.episode = epNum
+            }
+
+            episodes.add(ep)
         }
 
-        // fallback: treat as single playable page
         if (episodes.isEmpty()) {
             episodes.add(
-                Episode(
-                    data = seriesUrl,
-                    name = "مشاهدة",
-                    season = 1,
-                    episode = 1
-                )
+                newEpisode(seriesUrl) {
+                    this.name = "مشاهدة"
+                    this.season = 1
+                    this.episode = 1
+                }
             )
         }
 
@@ -270,7 +260,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Load ✅ FIX SERIES (compilation-safe)
+    // Load ✅ SERIES FIX (requires episodes param)
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
@@ -289,13 +279,10 @@ class WeCimaProvider : MainAPI() {
         if (type == TvType.TvSeries) {
             val episodes = doc.extractEpisodes(url)
 
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrlNull(poster)
                 this.posterHeaders = this@WeCimaProvider.posterHeaders
                 this.plot = plot
-
-                // ✅ safest method across versions
-                addEpisodes(DubStatus.Subbed, episodes)
             }
         }
 
@@ -307,7 +294,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks ✅ fast + stable
+    // LoadLinks ✅ fast
     // ---------------------------
 
     override suspend fun loadLinks(
