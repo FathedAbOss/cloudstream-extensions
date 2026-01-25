@@ -375,11 +375,12 @@ class WeCimaProvider : MainAPI() {
             val episodes = doc.extractEpisodes(url)
 
             // ✅ Your API requires episodes parameter
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = fixUrlNull(poster)
-                this.posterHeaders = this@WeCimaProvider.posterHeaders
-                this.plot = plot
-            }
+return newTvSeriesLoadResponse(title, url, TvType.TvSeries) {
+    this.posterUrl = fixUrlNull(poster)
+    this.posterHeaders = this@WeCimaProvider.posterHeaders
+    this.plot = plot
+    addEpisodes(DubStatus.Subbed, episodes)
+}
         }
 
         return newMovieLoadResponse(title, url, type, url) {
@@ -418,9 +419,9 @@ if (finalServers.isEmpty()) return false
         val finalLinks = LinkedHashSet<String>()
 
         // ✅ resolve internal links (watch/player) one-step only
-        servers.take(25).forEach { s ->
-            finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
-        }
+finalServers.take(25).forEach { s ->
+    finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
+}
 
         if (finalLinks.isEmpty()) return false
 
