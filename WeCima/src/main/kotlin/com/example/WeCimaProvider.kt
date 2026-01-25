@@ -2,6 +2,7 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
 
@@ -23,7 +24,12 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
-    // ✅ Website-like sections (no JS needed)
+    // ✅ Fix gray/missing thumbnails: Cloudstream needs Referer for images
+    private val posterHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Referer" to mainUrl
+    )
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الرئيسية (جديد)",
         "$mainUrl/movies/" to "أفلام",
@@ -38,7 +44,6 @@ class WeCimaProvider : MainAPI() {
     // ---------------------------
 
     private fun Element.extractTitleStrong(): String? {
-        // Titles can be in h3/h2/h1 or in <a title="..."> or img alt
         val h = this.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
         if (!h.isNullOrBlank()) return h
 
@@ -56,29 +61,50 @@ class WeCimaProvider : MainAPI() {
     }
 
     private fun Element.extractPosterStrong(): String? {
+        // 1) Direct img src
         val img = this.selectFirst("img")
         val src = img?.attr("src")?.trim()
-        if (!src.isNullOrBlank()) return fixUrl(src)
+        if (!src.isNullOrBlank() && !src.contains("data:")) return fixUrl(src)
 
+        // 2) Lazy attributes on img
         val lazy = img?.attr("data-src")?.trim()
             ?: img?.attr("data-original")?.trim()
             ?: img?.attr("data-lazy-src")?.trim()
             ?: img?.attr("data-image")?.trim()
-
         if (!lazy.isNullOrBlank()) return fixUrl(lazy)
 
+        // 3) srcset
         val srcset = img?.attr("srcset")?.trim()
         if (!srcset.isNullOrBlank()) {
             val first = srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
             if (!first.isNullOrBlank()) return fixUrl(first)
         }
 
-        // background-image: url(...)
+        // 4) background-image style on current element
         val style = this.attr("style")
         if (style.contains("background-image")) {
             val m = Regex("""url\((['"]?)(.*?)\1\)""").find(style)
             val bg = m?.groupValues?.getOrNull(2)?.trim()
             if (!bg.isNullOrBlank()) return fixUrl(bg)
+        }
+
+        // 5) background-image on inner elements
+        val bgEl = this.selectFirst("[style*=background-image]")
+        if (bgEl != null) {
+            val st = bgEl.attr("style")
+            val m = Regex("""url\((['"]?)(.*?)\1\)""").find(st)
+            val bg = m?.groupValues?.getOrNull(2)?.trim()
+            if (!bg.isNullOrBlank()) return fixUrl(bg)
+        }
+
+        // 6) other custom attributes
+        val any = this.selectFirst("[data-bg], [data-background], [data-poster], [data-thumb]")
+        if (any != null) {
+            val v = any.attr("data-bg").ifBlank { any.attr("data-background") }
+                .ifBlank { any.attr("data-poster") }
+                .ifBlank { any.attr("data-thumb") }
+                .trim()
+            if (v.isNotBlank()) return fixUrl(v)
         }
 
         return null
@@ -98,10 +124,9 @@ class WeCimaProvider : MainAPI() {
     }
 
     private fun unwrapProtectedLink(input: String): String {
-        // Sometimes sites wrap links like: https://example.com/?url=https%3A%2F%2Fvinovo.to%2F...
-        // We try to extract the real target.
         val u = input.trim()
 
+        // Handle protector like ?url=https%3A%2F%2Fvinovo...
         val m = Regex("""[?&](url|u|r)=([^&]+)""").find(u)
         if (m != null) {
             val encoded = m.groupValues.getOrNull(2)
@@ -113,18 +138,69 @@ class WeCimaProvider : MainAPI() {
                 }
             }
         }
+
         return u
     }
 
+    private fun Document.extractPossibleLinks(): List<String> {
+        val out = LinkedHashSet<String>()
+
+        // iframe
+        this.select("iframe[src]").forEach {
+            val s = it.attr("src").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // data-watch (IMPORTANT)
+        this.select("li[data-watch], [data-watch]").forEach {
+            val s = it.attr("data-watch").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // other data attrs
+        this.select("[data-url], [data-href], [data-embed-url], [data-embed]").forEach {
+            val s = it.attr("data-watch").ifBlank { it.attr("data-embed-url") }
+                .ifBlank { it.attr("data-url") }
+                .ifBlank { it.attr("data-href") }
+                .ifBlank { it.attr("data-embed") }
+                .trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // onclick
+        this.select("[onclick]").forEach { el ->
+            val on = el.attr("onclick")
+            val m = Regex("""(https?://[^\s'"]+|//[^\s'"]+)""").find(on)
+            val u = m?.value?.trim()
+            if (!u.isNullOrBlank()) out.add(fixUrl(u))
+        }
+
+        return out.toList()
+    }
+
+    private suspend fun resolveIfInternal(link: String, baseUrl: String): List<String> {
+        // If it points back to wecima, open it once and extract iframe/data-watch inside
+        val cleaned = unwrapProtectedLink(link)
+
+        val isInternal = cleaned.contains("wecima") || cleaned.startsWith(mainUrl)
+        if (!isInternal) return listOf(cleaned)
+
+        return try {
+            val doc = app.get(cleaned, headers = safeHeaders).document
+            val more = doc.extractPossibleLinks()
+            if (more.isEmpty()) listOf(cleaned) else more
+        } catch (_: Throwable) {
+            listOf(cleaned)
+        }
+    }
+
     // ---------------------------
-    // Main Page (LISTING) ✅ stable
+    // MainPage / Search
     // ---------------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // ✅ Keep it simple: fetch the section URL directly (no special pagination logic)
         val doc = app.get(request.data, headers = safeHeaders).document
 
-        // ✅ This selector style is closer to your earlier working script
         val items = doc.select(
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
         ).mapNotNull { element ->
@@ -138,15 +214,12 @@ class WeCimaProvider : MainAPI() {
 
             newMovieSearchResponse(title, link, type) {
                 posterUrl = fixUrlNull(poster)
+                this.posterHeaders = this@WeCimaProvider.posterHeaders
             }
         }.distinctBy { it.url }
 
         return newHomePageResponse(request.name, items)
     }
-
-    // ---------------------------
-    // Search
-    // ---------------------------
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
@@ -165,12 +238,13 @@ class WeCimaProvider : MainAPI() {
 
             newMovieSearchResponse(title, link, type) {
                 posterUrl = fixUrlNull(poster)
+                this.posterHeaders = this@WeCimaProvider.posterHeaders
             }
         }.distinctBy { it.url }
     }
 
     // ---------------------------
-    // Load details (type not hardcoded anymore ✅)
+    // Load
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
@@ -189,12 +263,13 @@ class WeCimaProvider : MainAPI() {
 
         return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
+            this.posterHeaders = this@WeCimaProvider.posterHeaders
             this.plot = plot
         }
     }
 
     // ---------------------------
-    // Links extraction ✅ FIXED (adds data-watch)
+    // LoadLinks ✅ FIXED PROPERLY
     // ---------------------------
 
     override suspend fun loadLinks(
@@ -209,45 +284,23 @@ class WeCimaProvider : MainAPI() {
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
 
-        val found = LinkedHashSet<String>()
+        // Step 1: collect links from the movie/episode page
+        val rawLinks = LinkedHashSet<String>()
+        rawLinks.addAll(doc.extractPossibleLinks())
 
-        // ✅ 1) iframe
-        doc.select("iframe[src]").forEach { iframe ->
-            val src = iframe.attr("src").trim()
-            if (src.isNotBlank()) found.add(fixUrl(src))
+        if (rawLinks.isEmpty()) return false
+
+        // Step 2: resolve internal/protected links ONE step
+        val finalLinks = LinkedHashSet<String>()
+        for (l in rawLinks) {
+            val resolved = resolveIfInternal(l, pageUrl)
+            resolved.forEach { finalLinks.add(it) }
         }
 
-        // ✅ 2) MAIN FIX: data-watch (Most important on current WeCima)
-        doc.select("li[data-watch], [data-watch]").forEach { el ->
-            val v = el.attr("data-watch").trim()
-            if (v.isNotBlank()) found.add(fixUrl(v))
-        }
+        if (finalLinks.isEmpty()) return false
 
-        // ✅ 3) Other data attributes (keep resilience)
-        doc.select("[data-url], [data-href], [data-embed], [data-embed-url]").forEach { el ->
-            val v = el.attr("data-embed-url").ifBlank { el.attr("data-url") }
-                .ifBlank { el.attr("data-href") }
-                .ifBlank { el.attr("data-embed") }
-                .trim()
-            if (v.isNotBlank()) found.add(fixUrl(v))
-        }
-
-        // ✅ 4) onclick
-        doc.select("[onclick]").forEach { el ->
-            val on = el.attr("onclick")
-            val m = Regex("""(https?://[^\s'"]+|//[^\s'"]+)""").find(on)
-            val u = m?.value?.trim()
-            if (!u.isNullOrBlank()) found.add(fixUrl(u))
-        }
-
-        // ✅ 5) unwrap protector links
-        val expanded = found.map { unwrapProtectedLink(it) }.toSet()
-        found.clear()
-        found.addAll(expanded)
-
-        if (found.isEmpty()) return false
-
-        found.forEach { link ->
+        // Step 3: send to extractors
+        finalLinks.forEach { link ->
             loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
 
