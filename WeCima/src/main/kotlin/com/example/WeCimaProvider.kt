@@ -2,9 +2,9 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLDecoder
-import java.util.Base64
 
 class WeCimaProvider : MainAPI() {
 
@@ -21,60 +21,218 @@ class WeCimaProvider : MainAPI() {
 
     private val safeHeaders = mapOf(
         "User-Agent" to USER_AGENT,
+        "Referer" to mainUrl
+    )
+
+    // ✅ Strong poster headers (hotlink protection fix)
+    private val posterHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
-        "Accept-Language" to "ar,en-US;q=0.9,en;q=0.8"
+        "Origin" to mainUrl,
+        "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+    )
+
+    // ✅ Website-like sections
+    override val mainPage = mainPageOf(
+        "$mainUrl/" to "الرئيسية (جديد)",
+        "$mainUrl/movies/" to "أفلام",
+        "$mainUrl/series/" to "مسلسلات",
+        "$mainUrl/episodes/" to "آخر الحلقات",
+        "$mainUrl/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D9%86%D9%85%D9%8A/" to "أفلام أنمي",
+        "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/" to "مسلسلات أنمي"
     )
 
     // ---------------------------
-    // 1. Aggressive Image Extractor
+    // Helpers: Title / Poster / Type
     // ---------------------------
-    private fun Element.getAnyPoster(): String? {
-        // 1. Check CSS Variable (Common in modern WeCima)
-        val style = this.attr("style").ifBlank { this.selectFirst("span.BG--GridItem")?.attr("style") } ?: ""
-        if (style.contains("--image")) {
-            val url = style.substringAfter("url(").substringBefore(")").trim('"', '\'', ' ')
-            if (url.length > 5) return fixUrl(url)
+
+    private fun Element.extractTitleStrong(): String? {
+        val h = this.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
+        if (!h.isNullOrBlank()) return h
+
+        val a = this.selectFirst("a") ?: return null
+        val t = a.attr("title")?.trim()
+        if (!t.isNullOrBlank()) return t
+
+        val imgAlt = this.selectFirst("img")?.attr("alt")?.trim()
+        if (!imgAlt.isNullOrBlank()) return imgAlt
+
+        val at = a.text()?.trim()
+        if (!at.isNullOrBlank() && at.length > 2) return at
+
+        return null
+    }
+
+    private fun Element.extractPosterStrong(): String? {
+        val img = this.selectFirst("img")
+
+        fun clean(u: String?): String? {
+            val s = u?.trim().orEmpty()
+            if (s.isBlank()) return null
+            if (s.startsWith("data:")) return null
+            return fixUrl(s)
         }
 
-        // 2. Check Standard Background Image
+        // 1) normal src
+        clean(img?.attr("src"))?.let { return it }
+
+        // 2) common lazy-load attributes
+        val lazyAttrs = listOf(
+            "data-src",
+            "data-original",
+            "data-lazy-src",
+            "data-image",
+            "data-thumb",
+            "data-poster",
+            "data-cover",
+            "data-img",
+            "data-bg",
+            "data-background",
+            "data-background-image"
+        )
+
+        if (img != null) {
+            for (a in lazyAttrs) {
+                clean(img.attr(a))?.let { return it }
+            }
+        }
+
+        // 3) srcset / data-srcset
+        val srcset = img?.attr("srcset")?.ifBlank { img.attr("data-srcset") }?.trim()
+        if (!srcset.isNullOrBlank()) {
+            val first = srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+            clean(first)?.let { return it }
+        }
+
+        // 4) background-image style on this element
+        val style = this.attr("style")
         if (style.contains("background-image")) {
-             val url = style.substringAfter("url(").substringBefore(")").trim('"', '\'', ' ')
-             if (url.length > 5) return fixUrl(url)
+            val m = Regex("""url\((['"]?)(.*?)\1\)""").find(style)
+            clean(m?.groupValues?.getOrNull(2))?.let { return it }
         }
 
-        // 3. Check Image Tags (Lazy loading variations)
-        val img = this.selectFirst("img") ?: return null
-        return img.attr("data-src").ifBlank {
-            img.attr("data-image").ifBlank {
-                img.attr("data-lazy-style").ifBlank {
-                    img.attr("src")
+        // 5) background-image on child elements
+        val childBg = this.selectFirst("[style*=background-image]")
+        if (childBg != null) {
+            val st = childBg.attr("style")
+            val m = Regex("""url\((['"]?)(.*?)\1\)""").find(st)
+            clean(m?.groupValues?.getOrNull(2))?.let { return it }
+        }
+
+        // 6) any element with lazy attributes
+        val any = this.selectFirst("[data-src], [data-original], [data-image], [data-thumb], [data-poster], [data-bg]")
+        if (any != null) {
+            for (a in lazyAttrs) {
+                clean(any.attr(a))?.let { return it }
+            }
+        }
+
+        return null
+    }
+
+    private fun guessTypeFrom(url: String, title: String): TvType {
+        val u = url.lowercase()
+        val t = title.lowercase()
+
+        if (u.contains("/series/") || u.contains("/episodes/") || t.contains("الحلقة") || t.contains("موسم"))
+            return TvType.TvSeries
+
+        if (u.contains("انمي") || t.contains("انمي"))
+            return TvType.Anime
+
+        return TvType.Movie
+    }
+
+    private fun unwrapProtectedLink(input: String): String {
+        val u = input.trim()
+
+        // protector like ?url=https%3A%2F%2Fvinovo...
+        val m = Regex("""[?&](url|u|r)=([^&]+)""").find(u)
+        if (m != null) {
+            val encoded = m.groupValues.getOrNull(2)
+            if (!encoded.isNullOrBlank()) {
+                return try {
+                    URLDecoder.decode(encoded, "UTF-8")
+                } catch (_: Throwable) {
+                    u
                 }
             }
-        }.let { if (it.length > 5) fixUrl(it) else null }
+        }
+
+        return u
+    }
+
+    private fun Document.extractPossibleLinks(): List<String> {
+        val out = LinkedHashSet<String>()
+
+        // iframe
+        this.select("iframe[src]").forEach {
+            val s = it.attr("src").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // ✅ MAIN: data-watch (WeCima current structure)
+        this.select("li[data-watch], [data-watch]").forEach {
+            val s = it.attr("data-watch").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // other data attrs
+        this.select("[data-url], [data-href], [data-embed-url], [data-embed]").forEach {
+            val s = it.attr("data-watch").ifBlank { it.attr("data-embed-url") }
+                .ifBlank { it.attr("data-url") }
+                .ifBlank { it.attr("data-href") }
+                .ifBlank { it.attr("data-embed") }
+                .trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // onclick
+        this.select("[onclick]").forEach { el ->
+            val on = el.attr("onclick")
+            val m = Regex("""(https?://[^\s'"]+|//[^\s'"]+)""").find(on)
+            val u = m?.value?.trim()
+            if (!u.isNullOrBlank()) out.add(fixUrl(u))
+        }
+
+        return out.toList()
+    }
+
+    private suspend fun resolveIfInternal(link: String, baseUrl: String): List<String> {
+        val cleaned = unwrapProtectedLink(link)
+
+        val isInternal = cleaned.contains("wecima") || cleaned.startsWith(mainUrl)
+        if (!isInternal) return listOf(cleaned)
+
+        return try {
+            val doc = app.get(cleaned, headers = safeHeaders).document
+            val more = doc.extractPossibleLinks()
+            if (more.isEmpty()) listOf(cleaned) else more
+        } catch (_: Throwable) {
+            listOf(cleaned)
+        }
     }
 
     // ---------------------------
-    // Main Page
+    // Main Page / Search
     // ---------------------------
-    override val mainPage = mainPageOf(
-        "$mainUrl/" to "الرئيسية",
-        "$mainUrl/movies/" to "أفلام",
-        "$mainUrl/series/" to "مسلسلات",
-        "$mainUrl/episodes/" to "الحلقات"
-    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data, headers = safeHeaders).document
-        
-        // Select ANY item that looks like a grid post
-        val items = doc.select(".GridItem, .BlockItem, .movie, article.post").mapNotNull { element ->
-            val a = element.selectFirst("a") ?: return@mapNotNull null
-            val link = fixUrl(a.attr("href"))
-            val title = element.selectFirst("a[title], h3, .Title, strong")?.text() ?: "Unknown"
-            val poster = element.getAnyPoster()
-            
-            newMovieSearchResponse(title, link, TvType.Movie) {
-                this.posterUrl = poster
+
+        val items = doc.select(
+            "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
+        ).mapNotNull { element ->
+            val a = element.selectFirst("a[href]") ?: return@mapNotNull null
+            val link = fixUrl(a.attr("href").trim())
+
+            val title = element.extractTitleStrong() ?: return@mapNotNull null
+            val poster = element.extractPosterStrong()
+            val type = guessTypeFrom(link, title)
+
+            newMovieSearchResponse(title, link, type) {
+                posterUrl = fixUrlNull(poster)
+                this.posterHeaders = this@WeCimaProvider.posterHeaders
             }
         }.distinctBy { it.url }
 
@@ -82,154 +240,87 @@ class WeCimaProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/AjaxCenter/Searching/$query/"
-        val doc = app.get(url, headers = safeHeaders).document
+        val q = query.trim().replace(" ", "+")
+        val doc = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
 
-        return doc.select(".GridItem, .BlockItem, .movie").mapNotNull { element ->
-            val a = element.selectFirst("a") ?: return@mapNotNull null
-            val link = fixUrl(a.attr("href"))
-            val title = element.text() // Search results are often simpler
-            val poster = element.getAnyPoster()
+        return doc.select(
+            "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
+        ).mapNotNull { element ->
+            val a = element.selectFirst("a[href]") ?: return@mapNotNull null
+            val link = fixUrl(a.attr("href").trim())
 
-            newMovieSearchResponse(title, link, TvType.Movie) {
-                this.posterUrl = poster
+            val title = element.extractTitleStrong() ?: return@mapNotNull null
+            val poster = element.extractPosterStrong()
+            val type = guessTypeFrom(link, title)
+
+            newMovieSearchResponse(title, link, type) {
+                posterUrl = fixUrlNull(poster)
+                this.posterHeaders = this@WeCimaProvider.posterHeaders
             }
-        }
+        }.distinctBy { it.url }
     }
 
     // ---------------------------
-    // 2. Load (Details & Episodes)
+    // Load
     // ---------------------------
+
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url, headers = safeHeaders).document
 
-        val title = doc.selectFirst("h1")?.text()?.trim() ?: "WeCima"
-        val poster = doc.selectFirst(".Poster img, .P-Poster img")?.let { it.attr("data-src").ifBlank { it.attr("src") } }
-            ?: doc.selectFirst("meta[property=og:image]")?.attr("content")
-        
-        val plot = doc.selectFirst(".Story, .story, .desc")?.text()?.trim()
-        val year = doc.select("a[href*='year']").text().toIntOrNull()
+        val title = doc.selectFirst("h1")?.text()?.trim()
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: "WeCima"
 
-        // --- SERIES DETECTION STRATEGY ---
-        // Look for ANY list of links that look like episodes.
-        // WeCima usually puts them in `.EpisodesList` or `.Seasons--Episodes`.
-        val episodeElements = doc.select(".EpisodesList a, .Seasons--Episodes a, .List--Seasons--Episodes a")
-        
-        if (episodeElements.isNotEmpty()) {
-            val episodes = episodeElements.mapNotNull {
-                val href = it.attr("href")
-                if (href.isBlank()) return@mapNotNull null
-                val name = it.text().trim()
-                // Extract number: "Episode 5" -> 5
-                val epNum = Regex("\\d+").findAll(name).lastOrNull()?.value?.toIntOrNull()
-                
-                Episode(fixUrl(href), name, episode = epNum)
-            }.reversed()
+        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
+            ?: doc.selectFirst("img[src]")?.attr("src")?.trim()
 
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-                this.posterUrl = fixUrlNull(poster)
-                this.plot = plot
-                this.year = year
-            }
-        }
+        val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // If no episodes found, assume it is a Movie (or a single episode page)
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        val type = guessTypeFrom(url, title)
+
+        return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
+            this.posterHeaders = this@WeCimaProvider.posterHeaders
             this.plot = plot
-            this.year = year
         }
     }
 
     // ---------------------------
-    // 3. Link Extraction (Brute Force)
+    // LoadLinks ✅ working
     // ---------------------------
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        
-        val doc = app.get(data, headers = safeHeaders).document
-        val foundLinks = mutableSetOf<String>()
 
-        // Strategy A: Direct Iframes (Easiest)
-        doc.select("iframe").forEach { 
-            val src = it.attr("src").ifBlank { it.attr("data-src") }
-            if (src.contains("http")) foundLinks.add(fixUrl(src))
+        val pageUrl = data.trim()
+        if (pageUrl.isBlank()) return false
+
+        val doc = app.get(pageUrl, headers = safeHeaders).document
+
+        // Step 1: get links from the page
+        val rawLinks = LinkedHashSet<String>()
+        rawLinks.addAll(doc.extractPossibleLinks())
+
+        if (rawLinks.isEmpty()) return false
+
+        // Step 2: resolve internal/protected links (one step)
+        val finalLinks = LinkedHashSet<String>()
+        for (l in rawLinks) {
+            val resolved = resolveIfInternal(l, pageUrl)
+            resolved.forEach { finalLinks.add(it) }
         }
 
-        // Strategy B: Watch Servers List (Data Attributes)
-        doc.select(".WatchServers li, .ServersList li, ul.Servers li").forEach { li ->
-            // Check every possible attribute where they might hide the URL
-            val potentialUrl = li.attr("data-watch").ifBlank { 
-                li.attr("data-url").ifBlank { 
-                    li.attr("data-link").ifBlank {
-                        li.selectFirst("a")?.attr("data-watch") ?: ""
-                    }
-                }
-            }
+        if (finalLinks.isEmpty()) return false
 
-            if (potentialUrl.isNotBlank()) {
-                // Is it Base64?
-                if (!potentialUrl.contains("/") && potentialUrl.length > 20) {
-                     try {
-                         val decoded = String(Base64.getDecoder().decode(potentialUrl))
-                         if (decoded.contains("http")) foundLinks.add(fixUrl(decoded))
-                     } catch (e: Exception) { /* Not simple base64 */ }
-                } 
-                // Is it a "key=value" string? (e.g. mycimafsd=...)
-                else if (potentialUrl.contains("=")) {
-                    val decoded = decodeSmart(potentialUrl)
-                    if (decoded != null) foundLinks.add(fixUrl(decoded))
-                    else foundLinks.add(fixUrl(potentialUrl)) // Try raw
-                } 
-                // Is it just a link?
-                else if (potentialUrl.contains("http")) {
-                    foundLinks.add(fixUrl(potentialUrl))
-                }
-            }
-            
-            // Also check the A tag href
-            val href = li.selectFirst("a")?.attr("href") ?: ""
-            if (href.contains("http") && !href.contains(mainUrl)) {
-                foundLinks.add(fixUrl(href))
-            }
-        }
-
-        // Strategy C: Execute links
-        foundLinks.forEach { link ->
-            // Clean up: WeCima sometimes wraps links like https://wecima.date/?url=REAL_URL
-            val cleanLink = if (link.contains("url=")) {
-                link.substringAfter("url=").substringBefore("&")
-                    .let { URLDecoder.decode(it, "UTF-8") }
-            } else link
-
-            loadExtractor(cleanLink, data, subtitleCallback, callback)
+        // Step 3: send links to extractors
+        finalLinks.forEach { link ->
+            loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
 
         return true
-    }
-
-    // Helper to decode "key=BASE64" strings
-    private fun decodeSmart(input: String): String? {
-        try {
-            // Find the longest part that looks like Base64 after an '='
-            val parts = input.split("&")
-            for (part in parts) {
-                if (part.contains("=")) {
-                    val value = part.substringAfter("=")
-                    // Base64 usually ends with = or ==, or matches [A-Za-z0-9+/]
-                    if (value.length > 20) {
-                         try {
-                             val decoded = String(Base64.getDecoder().decode(value))
-                             if (decoded.contains("http")) return decoded
-                         } catch (e: Exception) { }
-                    }
-                }
-            }
-        } catch (e: Exception) { }
-        return null
     }
 }
