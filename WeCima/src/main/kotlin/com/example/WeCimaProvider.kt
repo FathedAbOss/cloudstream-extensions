@@ -24,6 +24,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
+    // ✅ Hotlink protection for images
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -31,6 +32,7 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
+    // ✅ cache posters so we don't slow down
     private val posterCache = LinkedHashMap<String, String?>()
 
     override val mainPage = mainPageOf(
@@ -74,6 +76,7 @@ class WeCimaProvider : MainAPI() {
         return fixUrl(s)
     }
 
+    // ✅ strong posters (movies + series)
     private fun Element.extractPosterFromCard(): String? {
         val img = this.selectFirst("img")
         cleanUrl(img?.attr("src"))?.let { return it }
@@ -145,19 +148,19 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // data-watch
+        // ✅ 1) main servers list: data-watch
         this.select("li[data-watch], [data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // iframe
+        // ✅ 2) iframe direct
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // fallback
+        // ✅ 3) embed url attributes (light)
         this.select("[data-embed-url], [data-url], [data-href]").forEach {
             val s = it.attr("data-embed-url")
                 .ifBlank { it.attr("data-url") }
@@ -181,12 +184,9 @@ class WeCimaProvider : MainAPI() {
             val href = a.attr("href").trim()
             if (href.isBlank()) return@forEach
 
-            val link = fixUrl(href)
-            if (!link.contains("wecima") && !link.startsWith(mainUrl)) return@forEach
+            val link = normalizeUrl(fixUrl(href))
 
             val name = a.text().trim().ifBlank { "حلقة" }
-
-            // Try parse episode number
             val epNum = Regex("""(\d{1,4})""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
             episodes.add(
@@ -199,9 +199,16 @@ class WeCimaProvider : MainAPI() {
             )
         }
 
-        // fallback: if no episode links found, treat as single playable page
+        // fallback: treat as single playable page
         if (episodes.isEmpty()) {
-            episodes.add(Episode(data = seriesUrl, name = "مشاهدة", season = 1, episode = 1))
+            episodes.add(
+                Episode(
+                    data = seriesUrl,
+                    name = "مشاهدة",
+                    season = 1,
+                    episode = 1
+                )
+            )
         }
 
         return episodes.toList().reversed()
@@ -263,7 +270,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Load ✅ FIX SERIES
+    // Load ✅ FIX SERIES (compilation-safe)
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
@@ -279,18 +286,19 @@ class WeCimaProvider : MainAPI() {
         val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
         val type = guessTypeFrom(url, title)
 
-        // ✅ SERIES: return episodes list
         if (type == TvType.TvSeries) {
             val episodes = doc.extractEpisodes(url)
 
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries) {
                 this.posterUrl = fixUrlNull(poster)
                 this.posterHeaders = this@WeCimaProvider.posterHeaders
                 this.plot = plot
+
+                // ✅ safest method across versions
+                addEpisodes(DubStatus.Subbed, episodes)
             }
         }
 
-        // ✅ MOVIE / ANIME MOVIE
         return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
             this.posterHeaders = this@WeCimaProvider.posterHeaders
@@ -299,7 +307,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks ✅ FAST
+    // LoadLinks ✅ fast + stable
     // ---------------------------
 
     override suspend fun loadLinks(
