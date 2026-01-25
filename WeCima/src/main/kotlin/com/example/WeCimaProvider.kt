@@ -151,31 +151,66 @@ class WeCimaProvider : MainAPI() {
     }
 
     private fun Document.extractServersFast(): List<String> {
-        val out = LinkedHashSet<String>()
+    val out = LinkedHashSet<String>()
 
-        // ✅ data-watch
-        this.select("li[data-watch], [data-watch]").forEach {
-            val s = it.attr("data-watch").trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
-        }
-
-        // ✅ iframe direct
-        this.select("iframe[src]").forEach {
-            val s = it.attr("src").trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
-        }
-
-        // ✅ fallback attributes
-        this.select("[data-embed-url], [data-url], [data-href]").forEach {
-            val s = it.attr("data-embed-url")
-                .ifBlank { it.attr("data-url") }
-                .ifBlank { it.attr("data-href") }
-                .trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
-        }
-
-        return out.toList()
+    // 1) data-watch
+    this.select("[data-watch]").forEach {
+        val s = it.attr("data-watch").trim()
+        if (s.isNotBlank()) out.add(fixUrl(s))
     }
+
+    // 2) iframe
+    this.select("iframe[src]").forEach {
+        val s = it.attr("src").trim()
+        if (s.isNotBlank()) out.add(fixUrl(s))
+    }
+
+    // 3) explicit server links <a href> inside watch servers lists
+    this.select("a[href]").forEach { a ->
+        val href = a.attr("href").trim()
+        if (href.isBlank()) return@forEach
+
+        val text = a.text().lowercase()
+        // we only accept server-like entries (avoid random category links)
+        if (text.contains("vinovo") || text.contains("mix") || text.contains("mxdrop") || text.contains("vk")
+            || href.contains("vinovo") || href.contains("mixdrop") || href.contains("vk")
+        ) {
+            out.add(fixUrl(href))
+        }
+    }
+
+    // 4) onclick urls
+    this.select("[onclick]").forEach {
+        val oc = it.attr("onclick")
+        val m = Regex("""https?://[^"'\s<>]+""").find(oc)
+        if (m != null) out.add(fixUrl(m.value))
+    }
+
+    // 5) LAST RESORT: regex scan inside scripts/html
+    val html = this.html()
+    Regex("""https?://[^"'\s<>]+""")
+        .findAll(html)
+        .map { it.value }
+        .forEach { raw ->
+            val lower = raw.lowercase()
+            if (
+                lower.contains("vinovo") ||
+                lower.contains("mixdrop") ||
+                lower.contains("mxdrop") ||
+                lower.contains("vk") ||
+                lower.contains("fsdcmo") ||
+                lower.contains("dood") ||
+                lower.contains("streamtape") ||
+                lower.contains("uqload") ||
+                lower.contains("voe") ||
+                lower.contains("ok.ru")
+            ) {
+                out.add(fixUrl(raw))
+            }
+        }
+
+    return out.toList()
+}
 
     // ✅ Resolve internal WeCima links (watch/player) to real iframe
     private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
@@ -369,8 +404,16 @@ class WeCimaProvider : MainAPI() {
         if (pageUrl.isBlank()) return false
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
-        val servers = doc.extractServersFast()
-        if (servers.isEmpty()) return false
+      val servers = doc.extractServersFast()
+
+// لو ما لقينا شي، جرّب مرة ثانية بس بصفحة نفس الرابط مع headers مختلفة
+val finalServers = if (servers.isEmpty()) {
+    val retryDoc = app.get(pageUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")).document
+    retryDoc.extractServersFast()
+} else servers
+
+if (finalServers.isEmpty()) return false
+
 
         val finalLinks = LinkedHashSet<String>()
 
