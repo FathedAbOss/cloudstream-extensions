@@ -151,66 +151,66 @@ class WeCimaProvider : MainAPI() {
     }
 
     private fun Document.extractServersFast(): List<String> {
-    val out = LinkedHashSet<String>()
+        val out = LinkedHashSet<String>()
 
-    // 1) data-watch
-    this.select("[data-watch]").forEach {
-        val s = it.attr("data-watch").trim()
-        if (s.isNotBlank()) out.add(fixUrl(s))
-    }
-
-    // 2) iframe
-    this.select("iframe[src]").forEach {
-        val s = it.attr("src").trim()
-        if (s.isNotBlank()) out.add(fixUrl(s))
-    }
-
-    // 3) explicit server links <a href> inside watch servers lists
-    this.select("a[href]").forEach { a ->
-        val href = a.attr("href").trim()
-        if (href.isBlank()) return@forEach
-
-        val text = a.text().lowercase()
-        // we only accept server-like entries (avoid random category links)
-        if (text.contains("vinovo") || text.contains("mix") || text.contains("mxdrop") || text.contains("vk")
-            || href.contains("vinovo") || href.contains("mixdrop") || href.contains("vk")
-        ) {
-            out.add(fixUrl(href))
+        // 1) data-watch
+        this.select("[data-watch]").forEach {
+            val s = it.attr("data-watch").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
         }
-    }
 
-    // 4) onclick urls
-    this.select("[onclick]").forEach {
-        val oc = it.attr("onclick")
-        val m = Regex("""https?://[^"'\s<>]+""").find(oc)
-        if (m != null) out.add(fixUrl(m.value))
-    }
+        // 2) iframe
+        this.select("iframe[src]").forEach {
+            val s = it.attr("src").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
 
-    // 5) LAST RESORT: regex scan inside scripts/html
-    val html = this.html()
-    Regex("""https?://[^"'\s<>]+""")
-        .findAll(html)
-        .map { it.value }
-        .forEach { raw ->
-            val lower = raw.lowercase()
+        // 3) explicit server links <a href> inside watch servers lists
+        this.select("a[href]").forEach { a ->
+            val href = a.attr("href").trim()
+            if (href.isBlank()) return@forEach
+
+            val text = a.text().lowercase()
             if (
-                lower.contains("vinovo") ||
-                lower.contains("mixdrop") ||
-                lower.contains("mxdrop") ||
-                lower.contains("vk") ||
-                lower.contains("fsdcmo") ||
-                lower.contains("dood") ||
-                lower.contains("streamtape") ||
-                lower.contains("uqload") ||
-                lower.contains("voe") ||
-                lower.contains("ok.ru")
+                text.contains("vinovo") || text.contains("mix") || text.contains("mxdrop") || text.contains("vk") ||
+                href.contains("vinovo") || href.contains("mixdrop") || href.contains("vk")
             ) {
-                out.add(fixUrl(raw))
+                out.add(fixUrl(href))
             }
         }
 
-    return out.toList()
-}
+        // 4) onclick urls
+        this.select("[onclick]").forEach {
+            val oc = it.attr("onclick")
+            val m = Regex("""https?://[^"'\s<>]+""").find(oc)
+            if (m != null) out.add(fixUrl(m.value))
+        }
+
+        // 5) LAST RESORT: regex scan inside scripts/html
+        val html = this.html()
+        Regex("""https?://[^"'\s<>]+""")
+            .findAll(html)
+            .map { it.value }
+            .forEach { raw ->
+                val lower = raw.lowercase()
+                if (
+                    lower.contains("vinovo") ||
+                    lower.contains("mixdrop") ||
+                    lower.contains("mxdrop") ||
+                    lower.contains("vk") ||
+                    lower.contains("fsdcmo") ||
+                    lower.contains("dood") ||
+                    lower.contains("streamtape") ||
+                    lower.contains("uqload") ||
+                    lower.contains("voe") ||
+                    lower.contains("ok.ru")
+                ) {
+                    out.add(fixUrl(raw))
+                }
+            }
+
+        return out.toList()
+    }
 
     // ✅ Resolve internal WeCima links (watch/player) to real iframe
     private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
@@ -265,7 +265,6 @@ class WeCimaProvider : MainAPI() {
 
             val name = a.text().trim().ifBlank { "حلقة" }
 
-            // ✅ take LAST number from the text (usually episode number)
             val allNums = Regex("""(\d{1,4})""")
                 .findAll(name)
                 .mapNotNull { it.value.toIntOrNull() }
@@ -273,7 +272,6 @@ class WeCimaProvider : MainAPI() {
 
             val epNum = allNums.lastOrNull()
 
-            // ✅ Use newEpisode (avoid deprecated Episode constructor)
             val ep = newEpisode(link) {
                 this.name = name
                 this.season = 1
@@ -283,7 +281,6 @@ class WeCimaProvider : MainAPI() {
             found[link] = ep
         }
 
-        // fallback: if no episode links found
         val list = found.values.toList()
         if (list.isEmpty()) {
             return listOf(
@@ -295,7 +292,6 @@ class WeCimaProvider : MainAPI() {
             )
         }
 
-        // ✅ sort by episode number
         return list.sortedWith(compareBy<Episode> { it.episode ?: 99999 })
     }
 
@@ -374,13 +370,12 @@ class WeCimaProvider : MainAPI() {
         if (type == TvType.TvSeries) {
             val episodes = doc.extractEpisodes(url)
 
-            // ✅ Your API requires episodes parameter
-return newTvSeriesLoadResponse(title, url, TvType.TvSeries) {
-    this.posterUrl = fixUrlNull(poster)
-    this.posterHeaders = this@WeCimaProvider.posterHeaders
-    this.plot = plot
-    addEpisodes(DubStatus.Subbed, episodes)
-}
+            // ✅ IMPORTANT: your API REQUIRES episodes param
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = fixUrlNull(poster)
+                this.posterHeaders = this@WeCimaProvider.posterHeaders
+                this.plot = plot
+            }
         }
 
         return newMovieLoadResponse(title, url, type, url) {
@@ -405,23 +400,24 @@ return newTvSeriesLoadResponse(title, url, TvType.TvSeries) {
         if (pageUrl.isBlank()) return false
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
-      val servers = doc.extractServersFast()
+        val servers = doc.extractServersFast()
 
-// لو ما لقينا شي، جرّب مرة ثانية بس بصفحة نفس الرابط مع headers مختلفة
-val finalServers = if (servers.isEmpty()) {
-    val retryDoc = app.get(pageUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")).document
-    retryDoc.extractServersFast()
-} else servers
+        // retry
+        val finalServers = if (servers.isEmpty()) {
+            val retryDoc = app.get(
+                pageUrl,
+                headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")
+            ).document
+            retryDoc.extractServersFast()
+        } else servers
 
-if (finalServers.isEmpty()) return false
-
+        if (finalServers.isEmpty()) return false
 
         val finalLinks = LinkedHashSet<String>()
 
-        // ✅ resolve internal links (watch/player) one-step only
-finalServers.take(25).forEach { s ->
-    finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
-}
+        finalServers.take(25).forEach { s ->
+            finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
+        }
 
         if (finalLinks.isEmpty()) return false
 
