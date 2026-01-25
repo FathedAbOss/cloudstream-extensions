@@ -24,7 +24,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
-    // رأس مخصص للصور لتجاوز الحماية
+    // ✅ Hotlink protection (images) - Restored from your working script
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -32,9 +32,11 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
+    // ✅ Cache to avoid slow repeated requests - Restored
     private val posterCache = LinkedHashMap<String, String?>()
     private val linksCache = LinkedHashMap<String, List<String>>()
 
+    // ✅ Website-like sections
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الرئيسية (جديد)",
         "$mainUrl/movies/" to "أفلام",
@@ -45,12 +47,35 @@ class WeCimaProvider : MainAPI() {
     )
 
     // ---------------------------
-    // مساعدات استخراج الصور (محسنة للمسلسلات)
+    // Helpers
     // ---------------------------
 
+    private fun headersWithReferer(ref: String): Map<String, String> {
+        return mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to ref
+        )
+    }
+
+    private fun Element.extractTitleStrong(): String? {
+        val h = this.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
+        if (!h.isNullOrBlank()) return h
+
+        val a = this.selectFirst("a") ?: return null
+        val t = a.attr("title")?.trim()
+        if (!t.isNullOrBlank()) return t
+
+        val imgAlt = this.selectFirst("img")?.attr("alt")?.trim()
+        if (!imgAlt.isNullOrBlank()) return imgAlt
+
+        val at = a.text()?.trim()
+        if (!at.isNullOrBlank() && at.length > 2) return at
+
+        return null
+    }
+
     private fun Element.extractPosterFromCard(): String? {
-        // 1. البحث عن الصورة في الخلفية (شائع في المسلسلات)
-        // يبحث في العنصر نفسه أو أي عنصر ابن له style
+        // 1. FIX: Check background-image FIRST (Common for Series)
         val bgElements = this.select("[style*=background-image]") + this
         for (el in bgElements) {
             val style = el.attr("style")
@@ -60,9 +85,9 @@ class WeCimaProvider : MainAPI() {
                 if (!url.isNullOrBlank() && !url.startsWith("data:")) return fixUrl(url)
             }
         }
-        
-        // 2. البحث عن الوسم img العادي
-        val img = this.selectFirst("img") ?: return null
+
+        // 2. Standard IMG tag
+        val img = this.selectFirst("img")
 
         fun clean(u: String?): String? {
             val s = u?.trim().orEmpty()
@@ -71,13 +96,26 @@ class WeCimaProvider : MainAPI() {
             return fixUrl(s)
         }
 
-        // تجربة كل السمات المحتملة للصور المؤجلة (Lazy Loading)
+        clean(img?.attr("src"))?.let { return it }
+
+        // lazy attributes
         val lazyAttrs = listOf(
-            "data-src", "data-original", "data-lazy-src", "data-image", 
-            "data-bg", "src"
+            "data-src", "data-original", "data-lazy-src", "data-image",
+            "data-thumb", "data-poster", "data-cover", "data-img",
+            "data-bg", "data-background", "data-background-image"
         )
-        for (a in lazyAttrs) {
-            clean(img.attr(a))?.let { return it }
+
+        if (img != null) {
+            for (a in lazyAttrs) {
+                clean(img.attr(a))?.let { return it }
+            }
+        }
+
+        // srcset
+        val srcset = img?.attr("srcset")?.ifBlank { img.attr("data-srcset") }?.trim()
+        if (!srcset.isNullOrBlank()) {
+            val first = srcset.split(",").firstOrNull()?.trim()?.split(" ")?.firstOrNull()
+            clean(first)?.let { return it }
         }
 
         return null
@@ -86,37 +124,38 @@ class WeCimaProvider : MainAPI() {
     private fun looksPlaceholder(poster: String?): Boolean {
         if (poster.isNullOrBlank()) return true
         val p = poster.lowercase()
-        return p.contains("placeholder") || p.contains("noimage") || p.contains("default")
-    }
-
-    // ---------------------------
-    // استخراج العناوين والروابط
-    // ---------------------------
-
-    private fun Element.extractTitleStrong(): String? {
-        val h = this.selectFirst("h1,h2,h3,.title,.name")?.text()?.trim()
-        if (!h.isNullOrBlank()) return h
-        return this.selectFirst("a")?.attr("title")?.trim() ?: this.selectFirst("a")?.text()?.trim()
+        return p.contains("placeholder") || p.contains("noimage") || p.contains("default") || p.endsWith(".svg")
     }
 
     private fun guessTypeFrom(url: String, title: String): TvType {
         val u = url.lowercase()
         val t = title.lowercase()
+
         if (u.contains("/series/") || u.contains("/episodes/") || t.contains("الحلقة") || t.contains("موسم"))
             return TvType.TvSeries
+
         if (u.contains("انمي") || t.contains("انمي"))
             return TvType.Anime
+
         return TvType.Movie
     }
 
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
         if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
+
         val result = try {
-            val d = app.get(detailsUrl, headers = mapOf("Referer" to mainUrl)).document
+            val d = app.get(detailsUrl, headers = headersWithReferer(mainUrl)).document
             val og = d.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
             if (!og.isNullOrBlank()) fixUrl(og) else null
-        } catch (_: Throwable) { null }
-        if (posterCache.size > 200) posterCache.remove(posterCache.keys.first())
+        } catch (_: Throwable) {
+            null
+        }
+
+        if (posterCache.size > 250) {
+            val firstKey = posterCache.keys.firstOrNull()
+            if (firstKey != null) posterCache.remove(firstKey)
+        }
+
         posterCache[detailsUrl] = result
         return result
     }
@@ -127,47 +166,186 @@ class WeCimaProvider : MainAPI() {
         if (m != null) {
             val encoded = m.groupValues.getOrNull(2)
             if (!encoded.isNullOrBlank()) {
-                return try { URLDecoder.decode(encoded, "UTF-8") } catch (_: Throwable) { u }
+                return try {
+                    URLDecoder.decode(encoded, "UTF-8")
+                } catch (_: Throwable) {
+                    u
+                }
             }
         }
         return u
     }
 
     // ---------------------------
-    // الصفحة الرئيسية والبحث
+    // Link Extraction (Crawler Logic Restored)
+    // ---------------------------
+
+    private fun unescapeScriptUrl(s: String): String {
+        return s.replace("\\/", "/").replace("\\u0026", "&")
+    }
+
+    private fun Document.extractServersFromScripts(): List<String> {
+        val out = LinkedHashSet<String>()
+        val scripts = this.select("script")
+
+        val rx = Regex("""(https?:\\?/\\?/[^"'\s]+|https?://[^"'\s]+)""")
+        for (sc in scripts) {
+            val t = sc.data()
+            rx.findAll(t).forEach { m ->
+                val raw = m.value.trim()
+                val clean = unescapeScriptUrl(raw)
+                if (clean.contains("google") || clean.contains("facebook")) return@forEach
+                out.add(clean)
+            }
+
+            val rxWatch = Regex("""data-watch["']\s*:\s*["']([^"']+)["']""")
+            rxWatch.findAll(t).forEach { m ->
+                val v = unescapeScriptUrl(m.groupValues[1].trim())
+                if (v.isNotBlank()) out.add(fixUrl(v))
+            }
+        }
+        return out.toList()
+    }
+
+    private fun Document.extractPossibleLinks(): List<String> {
+        val out = LinkedHashSet<String>()
+
+        this.select("iframe[src]").forEach {
+            val s = it.attr("src").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        this.select("li[data-watch], [data-watch]").forEach {
+            val s = it.attr("data-watch").trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        this.select("[data-embed-url], [data-url], [data-href], [data-embed]").forEach {
+            val s = it.attr("data-embed-url").ifBlank { it.attr("data-url") }
+                .ifBlank { it.attr("data-href") }
+                .ifBlank { it.attr("data-embed") }
+                .trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        this.select("[onclick]").forEach { el ->
+            val on = el.attr("onclick")
+            val m = Regex("""(https?://[^\s'"]+|//[^\s'"]+)""").find(on)
+            val u = m?.value?.trim()
+            if (!u.isNullOrBlank()) out.add(fixUrl(u))
+        }
+
+        this.select("a[href]").forEach { a ->
+            val href = a.attr("href").trim()
+            if (href.contains("player") || href.contains("embed") || href.contains("watch") || href.contains("play.php")) {
+                out.add(fixUrl(href))
+            }
+        }
+
+        this.extractServersFromScripts().forEach { out.add(fixUrl(it)) }
+
+        return out.toList()
+    }
+
+    private suspend fun crawlResolveLinks(startUrl: String, maxDepth: Int = 3): List<String> {
+        if (linksCache.containsKey(startUrl)) return linksCache[startUrl] ?: emptyList()
+
+        val visited = HashSet<String>()
+        val queue = ArrayDeque<Pair<String, Int>>()
+        val final = LinkedHashSet<String>()
+
+        queue.add(startUrl to 0)
+        visited.add(startUrl)
+
+        while (queue.isNotEmpty()) {
+            val (current, depth) = queue.removeFirst()
+            if (depth > maxDepth) continue
+
+            val cleaned = unwrapProtectedLink(current)
+
+            val isInternal = cleaned.contains("wecima") || cleaned.startsWith(mainUrl)
+            if (!isInternal && cleaned.startsWith("http")) {
+                final.add(cleaned)
+                continue
+            }
+
+            if (isInternal) {
+                val doc = try {
+                    app.get(cleaned, headers = headersWithReferer(startUrl)).document
+                } catch (_: Throwable) {
+                    continue
+                }
+
+                val newLinks = doc.extractPossibleLinks()
+                for (l in newLinks) {
+                    val fx = fixUrl(unwrapProtectedLink(l))
+                    if (fx.isBlank()) continue
+                    if (visited.add(fx)) {
+                        queue.add(fx to (depth + 1))
+                    }
+                }
+            }
+        }
+
+        val result = final.toList()
+
+        if (linksCache.size > 200) {
+            val firstKey = linksCache.keys.firstOrNull()
+            if (firstKey != null) linksCache.remove(firstKey)
+        }
+
+        linksCache[startUrl] = result
+        return result
+    }
+
+    // ---------------------------
+    // MainPage / Search
     // ---------------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data, headers = safeHeaders).document
-        val items = doc.select("div.GridItem, div.BlockItem, div.movie, article").mapNotNull { element ->
+
+        val items = doc.select(
+            "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
+        ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
             val link = fixUrl(a.attr("href").trim())
+
             val title = element.extractTitleStrong() ?: return@mapNotNull null
             val type = guessTypeFrom(link, title)
-            
-            // محاولة استخراج الصورة بقوة أكبر
+
             var poster = element.extractPosterFromCard()
-            // إذا فشل الاستخراج من الكارد، نجلبه من صفحة التفاصيل (كحل أخير)
-            if (looksPlaceholder(poster)) poster = fetchOgPosterCached(link)
+
+            if (looksPlaceholder(poster)) {
+                poster = fetchOgPosterCached(link)
+            }
 
             newMovieSearchResponse(title, link, type) {
                 this.posterUrl = fixUrlNull(poster)
                 this.posterHeaders = this@WeCimaProvider.posterHeaders
             }
         }.distinctBy { it.url }
+
         return newHomePageResponse(request.name, items)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
-        val doc = app.get("$mainUrl/AjaxCenter/Searching/$q/", headers = safeHeaders).document
-        return doc.select("div.GridItem, div.BlockItem, div.movie").mapNotNull { element ->
+        val doc = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
+
+        return doc.select(
+            "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
+        ).mapNotNull { element ->
             val a = element.selectFirst("a[href]") ?: return@mapNotNull null
             val link = fixUrl(a.attr("href").trim())
+
             val title = element.extractTitleStrong() ?: return@mapNotNull null
             val type = guessTypeFrom(link, title)
+
             var poster = element.extractPosterFromCard()
-            if (looksPlaceholder(poster)) poster = fetchOgPosterCached(link)
+            if (looksPlaceholder(poster)) {
+                poster = fetchOgPosterCached(link)
+            }
 
             newMovieSearchResponse(title, link, type) {
                 this.posterUrl = fixUrlNull(poster)
@@ -177,35 +355,38 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // تحميل التفاصيل (Load)
+    // Load (FIX: Series support)
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url, headers = safeHeaders).document
 
-        val title = doc.selectFirst("h1")?.text()?.trim() 
-            ?: doc.selectFirst("meta[property=og:title]")?.attr("content") ?: "WeCima"
-        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content") 
-            ?: doc.selectFirst("img[src]")?.attr("src")
-        val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")
+        val title = doc.selectFirst("h1")?.text()?.trim()
+            ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
+            ?: "WeCima"
 
-        // التحقق مما إذا كان مسلسلاً عبر وجود قائمة حلقات
+        val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
+            ?: doc.selectFirst("img[src]")?.attr("src")?.trim()
+
+        val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
+
+        // FIX: Detect Series Episodes
         val episodeElements = doc.select(".EpisodesList a, .Seasons--Episodes a")
-        
+
         if (episodeElements.isNotEmpty()) {
             val episodes = episodeElements.mapNotNull {
                 val href = it.attr("href")
                 if (href.isBlank()) return@mapNotNull null
                 val name = it.text().trim()
                 val epNum = Regex("\\d+").findAll(name).lastOrNull()?.value?.toIntOrNull()
-                
+
                 Episode(
                     data = fixUrl(href),
                     name = name,
                     episode = epNum
                 )
             }.reversed()
-            
+
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrlNull(poster)
                 this.posterHeaders = this@WeCimaProvider.posterHeaders
@@ -213,7 +394,9 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+        // Default Movie Logic
+        val type = guessTypeFrom(url, title)
+        return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
             this.posterHeaders = this@WeCimaProvider.posterHeaders
             this.plot = plot
@@ -221,7 +404,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // استخراج الروابط (تم التعديل لجلب كل السيرفرات)
+    // LoadLinks (FIX: Explicit WatchServers)
     // ---------------------------
 
     override suspend fun loadLinks(
@@ -230,45 +413,40 @@ class WeCimaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+
         val pageUrl = data.trim()
         if (pageUrl.isBlank()) return false
 
-        val doc = app.get(pageUrl, headers = safeHeaders).document
-        val foundLinks = LinkedHashSet<String>()
-
-        // 1. استخراج السيرفرات من القائمة (Tabs) - هذا هو الجزء المفقود
-        // نبحث عن كل عنصر li داخل قائمة السيرفرات
-        val serverListItems = doc.select("ul.WatchServers > li, ul.ServersList > li, .ServersList li")
-        
-        serverListItems.forEach { li ->
-            // نحاول استخراج الرابط من data-watch أو data-url أو من زر داخلي
-            val link = li.attr("data-watch").ifBlank { 
-                li.attr("data-url").ifBlank { 
-                    li.selectFirst("a")?.attr("data-watch") 
-                } 
-            }?.trim()
-
-            if (!link.isNullOrBlank()) {
-                foundLinks.add(fixUrl(unwrapProtectedLink(link)))
+        // FIX: 1. Extract links explicitly from WatchServers (to see all 4+ servers)
+        val initialLinks = LinkedHashSet<String>()
+        try {
+            val doc = app.get(pageUrl, headers = safeHeaders).document
+            // Iterate all LI elements in the server lists
+            doc.select("ul.WatchServers > li, ul.ServersList > li, .ServersList li").forEach { li ->
+                val raw = li.attr("data-watch").ifBlank {
+                    li.attr("data-url").ifBlank {
+                        li.selectFirst("a")?.attr("data-watch")
+                    }
+                }?.trim()
+                
+                if (!raw.isNullOrBlank()) {
+                    initialLinks.add(fixUrl(unwrapProtectedLink(raw)))
+                }
             }
-        }
+        } catch (_: Exception) {}
 
-        // 2. استخراج الروابط من iframes مباشرة (للسيرفر النشط حالياً)
-        doc.select("iframe[src]").forEach { iframe ->
-            val src = iframe.attr("src").trim()
-            if (src.isNotBlank()) foundLinks.add(fixUrl(src))
-        }
+        // FIX: 2. Run the Crawler (Your original logic)
+        val crawledLinks = crawlResolveLinks(pageUrl, maxDepth = 3)
 
-        // 3. (اختياري) استخدام الزحف كخيار احتياطي إذا لم نجد شيئاً في القوائم
-        if (foundLinks.isEmpty()) {
-             // كود الزحف القديم يمكن وضعه هنا، لكن استخراج القوائم عادة ما يكون كافياً وأسرع
-        }
+        // FIX: 3. Merge and load
+        val allLinks = initialLinks + crawledLinks
 
-        // تمرير الروابط للمستخرجات
-        foundLinks.forEach { link ->
+        if (allLinks.isEmpty()) return false
+
+        allLinks.forEach { link ->
             loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
 
-        return foundLinks.isNotEmpty()
+        return true
     }
 }
