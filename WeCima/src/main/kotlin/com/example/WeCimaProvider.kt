@@ -24,6 +24,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
+    // ✅ Hotlink protection for images
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -31,6 +32,7 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
+    // ✅ cache posters so we don't slow down
     private val posterCache = LinkedHashMap<String, String?>()
 
     override val mainPage = mainPageOf(
@@ -83,6 +85,7 @@ class WeCimaProvider : MainAPI() {
             "data-thumb", "data-poster", "data-cover", "data-img",
             "data-bg", "data-background", "data-background-image"
         )
+
         if (img != null) {
             for (a in lazyAttrs) {
                 cleanUrl(img.attr(a))?.let { return it }
@@ -129,7 +132,13 @@ class WeCimaProvider : MainAPI() {
         val result = try {
             val d = app.get(detailsUrl, headers = safeHeaders).document
             val og = d.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
-            if (!og.isNullOrBlank()) fixUrl(og) else null
+            if (!og.isNullOrBlank()) {
+                fixUrl(og)
+            } else {
+                // ✅ fallback: first image
+                val anyImg = d.selectFirst("img[src]")?.attr("src")?.trim()
+                if (!anyImg.isNullOrBlank()) fixUrl(anyImg) else null
+            }
         } catch (_: Throwable) {
             null
         }
@@ -145,16 +154,19 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
+        // ✅ 1) data-watch
         this.select("li[data-watch], [data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // ✅ 2) iframe direct
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // ✅ 3) fallback attributes
         this.select("[data-embed-url], [data-url], [data-href]").forEach {
             val s = it.attr("data-embed-url")
                 .ifBlank { it.attr("data-url") }
@@ -166,12 +178,46 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ Episodes using newEpisode (no deprecated constructor)
+    // ✅ NEW: resolve internal WeCima links (watch/player) to real iframe
+    private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
+        val fixed = fixUrl(link).trim()
+        if (fixed.isBlank()) return emptyList()
+
+        val isInternal = fixed.contains("wecima") || fixed.startsWith(mainUrl)
+        if (!isInternal) return listOf(fixed)
+
+        // only resolve specific internal pages
+        if (!(fixed.contains("watch") || fixed.contains("player") || fixed.contains("play"))) {
+            return listOf(fixed)
+        }
+
+        return try {
+            val doc = app.get(fixed, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
+            val out = LinkedHashSet<String>()
+
+            doc.select("iframe[src]").forEach {
+                val s = it.attr("src").trim()
+                if (s.isNotBlank()) out.add(fixUrl(s))
+            }
+
+            // sometimes again data-watch inside
+            doc.select("[data-watch]").forEach {
+                val s = it.attr("data-watch").trim()
+                if (s.isNotBlank()) out.add(fixUrl(s))
+            }
+
+            if (out.isEmpty()) listOf(fixed) else out.toList()
+        } catch (_: Throwable) {
+            listOf(fixed)
+        }
+    }
+
+    // ✅ Extract episodes list from series page (sorted correctly)
     private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
-        val episodes = LinkedHashSet<Episode>()
+        val found = LinkedHashMap<String, Episode>()
 
         val candidates = this.select(
-            "a[href*=/episode], a[href*=/episodes], a:contains(الحلقة), a:contains(EP), a:contains(Episode)"
+            "a[href*=/episode], a[href*=/episodes], a:contains(الحلقة), a:contains(مشاهدة)"
         )
 
         candidates.forEach { a ->
@@ -179,29 +225,40 @@ class WeCimaProvider : MainAPI() {
             if (href.isBlank()) return@forEach
 
             val link = normalizeUrl(fixUrl(href))
+            if (!link.contains("wecima") && !link.startsWith(mainUrl)) return@forEach
+
             val name = a.text().trim().ifBlank { "حلقة" }
-            val epNum = Regex("""(\d{1,4})""").find(name)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
-            val ep = newEpisode(link) {
-                this.name = name
-                this.season = 1
-                this.episode = epNum
-            }
+            // ✅ take LAST number from the text (usually episode number)
+            val allNums = Regex("""(\d{1,4})""").findAll(name).map { it.value.toIntOrNull() }.toList()
+            val epNum = allNums.lastOrNull { it != null } as Int?
 
-            episodes.add(ep)
+            val episode = Episode(
+                data = link,
+                name = name,
+                season = 1,
+                episode = epNum
+            )
+
+            // ✅ avoid duplicates by url
+            found[link] = episode
         }
 
-        if (episodes.isEmpty()) {
-            episodes.add(
-                newEpisode(seriesUrl) {
-                    this.name = "مشاهدة"
-                    this.season = 1
-                    this.episode = 1
-                }
+        // fallback: if no episode links found
+        val list = found.values.toList()
+        if (list.isEmpty()) {
+            return listOf(
+                Episode(
+                    data = seriesUrl,
+                    name = "مشاهدة",
+                    season = 1,
+                    episode = 1
+                )
             )
         }
 
-        return episodes.toList().reversed()
+        // ✅ sort by episode number
+        return list.sortedWith(compareBy<Episode> { it.episode ?: 99999 })
     }
 
     // ---------------------------
@@ -260,7 +317,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Load ✅ SERIES FIX (requires episodes param)
+    // Load ✅ FIX SERIES
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
@@ -279,10 +336,12 @@ class WeCimaProvider : MainAPI() {
         if (type == TvType.TvSeries) {
             val episodes = doc.extractEpisodes(url)
 
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries) {
                 this.posterUrl = fixUrlNull(poster)
                 this.posterHeaders = this@WeCimaProvider.posterHeaders
                 this.plot = plot
+
+                addEpisodes(DubStatus.Subbed, episodes)
             }
         }
 
@@ -294,7 +353,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks ✅ fast
+    // LoadLinks ✅ internal resolve
     // ---------------------------
 
     override suspend fun loadLinks(
@@ -309,10 +368,18 @@ class WeCimaProvider : MainAPI() {
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
         val servers = doc.extractServersFast()
-
         if (servers.isEmpty()) return false
 
-        servers.forEach { link ->
+        val finalLinks = LinkedHashSet<String>()
+
+        // ✅ resolve internal links (watch/player) one-step only (safe & fast)
+        servers.take(25).forEach { s ->
+            finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
+        }
+
+        if (finalLinks.isEmpty()) return false
+
+        finalLinks.forEach { link ->
             loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
 
