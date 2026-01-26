@@ -24,7 +24,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
-    // ✅ Hotlink protection for images
+    // ✅ For images hotlink protection
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -32,7 +32,7 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
-    // ✅ cache posters so we don't slow down
+    // ✅ Cache og:image posters to avoid slow loading
     private val posterCache = LinkedHashMap<String, String?>()
 
     override val mainPage = mainPageOf(
@@ -117,7 +117,7 @@ class WeCimaProvider : MainAPI() {
         val u = url.lowercase()
         val t = title.lowercase()
 
-        if (u.contains("/series/") || u.contains("/episodes/") || t.contains("الحلقة") || t.contains("موسم"))
+        if (u.contains("/series/") || u.contains("/episodes/") || u.contains("مشاهدة-مسلسل") || t.contains("الحلقة"))
             return TvType.TvSeries
 
         if (u.contains("انمي") || t.contains("انمي"))
@@ -146,54 +146,61 @@ class WeCimaProvider : MainAPI() {
             val firstKey = posterCache.keys.firstOrNull()
             if (firstKey != null) posterCache.remove(firstKey)
         }
+
         posterCache[detailsUrl] = result
         return result
     }
 
-    // ✅ Extract server-like links + direct mp4/m3u8
+    // ✅ Multi-Attribute Server Extraction (Series Friendly)
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // 1) data-watch
+        // 1) data-watch is the MAIN one
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // 2) iframe
+        // 2) other common data attrs
+        this.select("[data-url],[data-href],[data-embed-url],[data-src],[data-link]").forEach {
+            val s = it.attr("data-watch")
+                .ifBlank { it.attr("data-url") }
+                .ifBlank { it.attr("data-href") }
+                .ifBlank { it.attr("data-embed-url") }
+                .ifBlank { it.attr("data-src") }
+                .ifBlank { it.attr("data-link") }
+                .trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
+        }
+
+        // 3) iframes
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // 3) other data attributes
-        this.select("[data-url], [data-href], [data-embed-url], [data-src]").forEach {
-            val s = it.attr("data-watch")
-                .ifBlank { it.attr("data-embed-url") }
-                .ifBlank { it.attr("data-url") }
-                .ifBlank { it.attr("data-href") }
-                .ifBlank { it.attr("data-src") }
-                .trim()
-            if (s.isNotBlank()) out.add(fixUrl(s))
+        // 4) onclick: search for url in JS
+        this.select("[onclick]").forEach {
+            val oc = it.attr("onclick")
+            val m = Regex("""https?://[^"'\s<>]+""").find(oc)
+            if (m != null) out.add(fixUrl(m.value))
         }
 
-        // 4) <a href>
+        // 5) a[href] server-like
         this.select("a[href]").forEach { a ->
             val href = a.attr("href").trim()
             if (href.isBlank()) return@forEach
-
             val h = href.lowercase()
+
             if (
                 h.contains("watch") || h.contains("player") || h.contains("play") || h.contains("embed") ||
-                h.contains(".mp4") || h.contains(".m3u8") ||
-                h.contains("vinovo") || h.contains("mixdrop") || h.contains("dood") || h.contains("voe") ||
-                h.contains("streamtape") || h.contains("ok.ru") || h.contains("uqload")
+                h.contains(".mp4") || h.contains(".m3u8")
             ) {
                 out.add(fixUrl(href))
             }
         }
 
-        // 5) find direct media inside scripts/html
+        // 6) find direct mp4/m3u8 inside HTML
         val html = this.html()
         Regex("""https?://[^\s"'<>]+?\.(mp4|m3u8)(\?[^\s"'<>]+)?""", RegexOption.IGNORE_CASE)
             .findAll(html)
@@ -202,8 +209,8 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ Resolve internal player/watch page
-    private suspend fun resolveInternalIfNeeded(link: String, refererPage: String): List<String> {
+    // ✅ if internal wecima link (watch/player), open it and pull iframe/mp4
+    private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
         val fixed = fixUrl(link).trim()
         if (fixed.isBlank()) return emptyList()
 
@@ -222,7 +229,7 @@ class WeCimaProvider : MainAPI() {
                 fixed,
                 headers = mapOf(
                     "User-Agent" to USER_AGENT,
-                    "Referer" to refererPage,
+                    "Referer" to referer,
                     "Origin" to mainUrl
                 )
             ).document
@@ -236,27 +243,31 @@ class WeCimaProvider : MainAPI() {
         }
     }
 
-    // ✅ Extract episodes sorted
+    // ✅ Episodes extraction (only real مشاهدة links)
     private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
         val found = LinkedHashMap<String, Episode>()
 
-        val candidates = this.select(
-            "a[href*=/episode], a[href*=/episodes], a:contains(الحلقة), a:contains(مشاهدة)"
-        )
+        val candidates = this.select("a[href]")
 
         candidates.forEach { a ->
             val href = a.attr("href").trim()
             if (href.isBlank()) return@forEach
 
             val link = normalizeUrl(fixUrl(href))
+            val low = link.lowercase()
+
+            // only keep episode/watch links
+            val ok = (low.contains("مشاهدة-مسلسل") || low.contains("/episode") || low.contains("الحلق"))
+            if (!ok) return@forEach
+
             val name = a.text().trim().ifBlank { "حلقة" }
 
-            val allNums = Regex("""(\d{1,4})""")
+            val nums = Regex("""(\d{1,4})""")
                 .findAll(name)
                 .mapNotNull { it.value.toIntOrNull() }
                 .toList()
 
-            val epNum = allNums.lastOrNull()
+            val epNum = nums.lastOrNull()
 
             val ep = newEpisode(link) {
                 this.name = name
@@ -371,7 +382,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks ✅ Correct newExtractorLink usage
+    // LoadLinks ✅ Series Fix
     // ---------------------------
 
     override suspend fun loadLinks(
@@ -393,47 +404,28 @@ class WeCimaProvider : MainAPI() {
             )
         ).document
 
+        // 1) extract servers from episode page
         val servers = doc.extractServersFast()
 
-        // fallback: play.php?vid=
-        val serversOrPlay = if (servers.isEmpty()) {
-            val html = doc.html()
-            val vid =
-                Regex("""vid=([A-Za-z0-9]+)""").find(pageUrl)?.groupValues?.getOrNull(1)
-                    ?: Regex("""vid=([A-Za-z0-9]+)""").find(html)?.groupValues?.getOrNull(1)
+        // 2) if empty, try find internal watch/player link first
+        val fallbackLinks = if (servers.isEmpty()) {
+            val internal = doc.select("a[href*=watch],a[href*=player],a[href*=play],a[href*=embed]")
+                .mapNotNull { it.attr("href")?.trim() }
+                .filter { it.isNotBlank() }
+                .map { fixUrl(it) }
+            internal
+        } else emptyList()
 
-            if (vid != null) {
-                val playUrl = "$mainUrl/play.php?vid=$vid"
-                val playDoc = app.get(
-                    playUrl,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to pageUrl,
-                        "Origin" to mainUrl
-                    )
-                ).document
-                playDoc.extractServersFast()
-            } else emptyList()
-        } else servers
-
-        if (serversOrPlay.isEmpty()) return false
-
-        val finalLinks = LinkedHashSet<String>()
-        serversOrPlay.take(40).forEach { s ->
-            finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
+        val collected = LinkedHashSet<String>()
+        (servers + fallbackLinks).take(50).forEach { s ->
+            collected.addAll(resolveInternalIfNeeded(s, pageUrl))
         }
 
-        if (finalLinks.isEmpty()) return false
-
-        val directHeaders = mapOf(
-            "User-Agent" to USER_AGENT,
-            "Referer" to pageUrl,
-            "Origin" to mainUrl
-        )
+        if (collected.isEmpty()) return false
 
         var foundAny = false
 
-        for (link in finalLinks) {
+        collected.forEach { link ->
             val low = link.lowercase()
 
             // ✅ Direct MP4
@@ -444,14 +436,13 @@ class WeCimaProvider : MainAPI() {
                         source = "DirectMP4",
                         name = "DirectMP4",
                         url = link,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
                         referer = pageUrl
+                    ) {
                         quality = Qualities.Unknown.value
-                        headers = directHeaders
+                        isM3u8 = false
                     }
                 )
-                continue
+                return@forEach
             }
 
             // ✅ Direct M3U8
@@ -462,17 +453,16 @@ class WeCimaProvider : MainAPI() {
                         source = "HLS",
                         name = "HLS",
                         url = link,
-                        type = ExtractorLinkType.M3U8
-                    ) {
                         referer = pageUrl
+                    ) {
                         quality = Qualities.Unknown.value
-                        headers = directHeaders
+                        isM3u8 = true
                     }
                 )
-                continue
+                return@forEach
             }
 
-            // ✅ Otherwise use extractors
+            // ✅ Extractor hosters
             foundAny = true
             loadExtractor(link, pageUrl, subtitleCallback, callback)
         }
