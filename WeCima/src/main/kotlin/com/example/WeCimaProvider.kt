@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.LinkedHashMap
+import java.util.LinkedHashSet
 
 class WeCimaProvider : MainAPI() {
 
@@ -24,6 +25,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to mainUrl
     )
 
+    // ✅ Hotlink protection for images
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -31,6 +33,7 @@ class WeCimaProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
+    // ✅ cache posters so we don't slow down
     private val posterCache = LinkedHashMap<String, String?>()
 
     override val mainPage = mainPageOf(
@@ -152,11 +155,13 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
+        // 1) data-watch
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // 2) other data attrs
         this.select("[data-url],[data-href],[data-embed-url],[data-src],[data-link]").forEach {
             val s = it.attr("data-watch")
                 .ifBlank { it.attr("data-url") }
@@ -168,17 +173,20 @@ class WeCimaProvider : MainAPI() {
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // 3) iframe
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // 4) onclick urls
         this.select("[onclick]").forEach {
             val oc = it.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
             if (m != null) out.add(fixUrl(m.value))
         }
 
+        // 5) any link looks like watch/player/embed/mp4/m3u8
         this.select("a[href]").forEach { a ->
             val href = a.attr("href").trim()
             if (href.isBlank()) return@forEach
@@ -191,6 +199,7 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
+        // 6) mp4/m3u8 in html
         val html = this.html()
         Regex("""https?://[^\s"'<>]+?\.(mp4|m3u8)(\?[^\s"'<>]+)?""", RegexOption.IGNORE_CASE)
             .findAll(html)
@@ -234,7 +243,6 @@ class WeCimaProvider : MainAPI() {
 
     private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
         val found = LinkedHashMap<String, Episode>()
-
         val candidates = this.select("a[href]")
 
         candidates.forEach { a ->
@@ -415,32 +423,28 @@ class WeCimaProvider : MainAPI() {
             // ✅ Direct MP4
             if (low.contains(".mp4")) {
                 foundAny = true
-                callback(
-    newExtractorLink(
-        "DirectMP4",
-        "DirectMP4",
-        link,
-        ExtractorLinkType.VIDEO,
-        pageUrl
-    )
-)
-
+                newExtractorLink(
+                    "DirectMP4",
+                    "DirectMP4",
+                    link,
+                    pageUrl,
+                    ExtractorLinkType.VIDEO,
+                    callback
+                )
                 return@forEach
             }
 
             // ✅ Direct M3U8
             if (low.contains(".m3u8")) {
                 foundAny = true
-                callback(
-    newExtractorLink(
-        "HLS",
-        "HLS",
-        link,
-        ExtractorLinkType.M3U8,
-        pageUrl
-    )
-)
-
+                newExtractorLink(
+                    "HLS",
+                    "HLS",
+                    link,
+                    pageUrl,
+                    ExtractorLinkType.M3U8,
+                    callback
+                )
                 return@forEach
             }
 
