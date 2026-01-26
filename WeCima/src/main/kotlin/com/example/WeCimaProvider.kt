@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.LinkedHashMap
+import java.util.Base64
 import kotlin.math.min
 
 class WeCimaProvider : MainAPI() {
@@ -180,6 +181,7 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
+        // IMPORTANT: WeCima uses data-watch heavily
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
@@ -207,7 +209,95 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ Resolve internal watch/player pages one step deeper
+    // ✅ Base64(urlsafe) decode for slp_watch
+    private fun decodeSlpWatchUrl(encoded: String): String? {
+        val raw = encoded.trim()
+        if (raw.isBlank()) return null
+
+        // urlsafe base64 can be without padding
+        val normalized = raw
+            .replace('-', '+')
+            .replace('_', '/')
+            .let { s ->
+                val mod = s.length % 4
+                if (mod == 0) s else s + "=".repeat(4 - mod)
+            }
+
+        return try {
+            val bytes = Base64.getDecoder().decode(normalized)
+            val decoded = String(bytes, Charsets.UTF_8).trim()
+            if (decoded.startsWith("http")) decoded else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    // ✅ pull slp_watch=... from a URL (akhbarworld.online?...slp_watch=BASE64)
+    private fun extractSlpWatchParam(url: String): String? {
+        val u = url.trim()
+        if (!u.contains("slp_watch=")) return null
+        return try {
+            val q = u.substringAfter("slp_watch=", "")
+            if (q.isBlank()) null else q.substringBefore("&").trim()
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    // ✅ Follow data-watch -> decode slp_watch -> fetch decoded page -> extract iframe/mp4/m3u8/servers
+    private suspend fun expandDataWatchLink(dataWatchUrl: String, referer: String): List<String> {
+        val out = LinkedHashSet<String>()
+
+        val fixed = fixUrl(dataWatchUrl).trim()
+        if (fixed.isBlank()) return emptyList()
+
+        // 1) If it contains slp_watch param, decode it
+        val slp = extractSlpWatchParam(fixed)
+        val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
+
+        if (!decodedUrl.isNullOrBlank()) {
+            out.add(decodedUrl)
+
+            // 2) fetch decoded url and extract servers from that page
+            try {
+                val doc = app.get(
+                    decodedUrl,
+                    headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Referer" to referer
+                    )
+                ).document
+
+                doc.extractServersFast().forEach { out.add(it) }
+                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+            } catch (_: Throwable) {
+                // ignore
+            }
+        } else {
+            // If not decodable, still keep original (some gateways redirect)
+            out.add(fixed)
+
+            // try fetching the gateway itself (sometimes returns iframe)
+            try {
+                val doc = app.get(
+                    fixed,
+                    headers = mapOf(
+                        "User-Agent" to USER_AGENT,
+                        "Referer" to referer
+                    )
+                ).document
+
+                doc.extractServersFast().forEach { out.add(it) }
+                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+            } catch (_: Throwable) {
+                // ignore
+            }
+        }
+
+        return out.toList()
+    }
+
+    // ✅ Resolve internal watch/player pages one step deeper (kept)
     private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
         val fixed = fixUrl(link).trim()
         if (fixed.isBlank()) return emptyList()
@@ -403,9 +493,29 @@ class WeCimaProvider : MainAPI() {
         val doc = app.get(pageUrl, headers = safeHeaders).document
 
         val servers = LinkedHashSet<String>()
+
+        // 0) IMPORTANT: expand data-watch gateways (WeCima real method)
+        // Extract raw data-watch links first
+        val dataWatchLinks = doc.select("[data-watch]")
+            .mapNotNull { it.attr("data-watch")?.trim() }
+            .filter { it.isNotBlank() }
+
+        // Expand each data-watch (decode slp_watch if present, then scrape resulting page)
+        dataWatchLinks.take(25).forEach { dw ->
+            try {
+                expandDataWatchLink(dw, pageUrl).forEach { servers.add(it) }
+            } catch (_: Throwable) {
+                // ignore
+            }
+        }
+
+        // 1) direct MP4/M3U8 from scripts
         doc.extractDirectMediaFromScripts().forEach { servers.add(it) }
+
+        // 2) data-watch / iframe / onclick / other data attrs
         doc.extractServersFast().forEach { servers.add(it) }
 
+        // Retry with slightly different referer if empty
         if (servers.isEmpty()) {
             val retryDoc = app.get(
                 pageUrl,
@@ -417,12 +527,26 @@ class WeCimaProvider : MainAPI() {
 
             retryDoc.extractDirectMediaFromScripts().forEach { servers.add(it) }
             retryDoc.extractServersFast().forEach { servers.add(it) }
+
+            // expand data-watch again
+            val retryDataWatch = retryDoc.select("[data-watch]")
+                .mapNotNull { it.attr("data-watch")?.trim() }
+                .filter { it.isNotBlank() }
+
+            retryDataWatch.take(25).forEach { dw ->
+                try {
+                    expandDataWatchLink(dw, pageUrl).forEach { servers.add(it) }
+                } catch (_: Throwable) {
+                    // ignore
+                }
+            }
         }
 
         if (servers.isEmpty()) return false
 
+        // ✅ resolve internal links one step
         val finalLinks = LinkedHashSet<String>()
-        val takeN = min(servers.size, 40)
+        val takeN = min(servers.size, 60)
 
         servers.toList().take(takeN).forEach { s ->
             finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
@@ -438,7 +562,7 @@ class WeCimaProvider : MainAPI() {
         finalLinks.forEach { link ->
             val l = link.lowercase()
 
-            // ✅ direct media (signature: source, name, url, type, suspendCallback)
+            // direct media
             if (l.contains(".mp4") || l.contains(".m3u8")) {
                 val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
@@ -454,7 +578,7 @@ class WeCimaProvider : MainAPI() {
                 return@forEach
             }
 
-            // ✅ normal extractors
+            // normal extractors
             try {
                 loadExtractor(link, pageUrl, subtitleCallback, callback)
                 foundAny = true
