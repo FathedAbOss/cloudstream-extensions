@@ -421,32 +421,32 @@ class WeCimaProvider : MainAPI() {
             val low = link.lowercase()
 
             // ✅ Direct MP4
-            if (low.contains(".mp4")) {
-                foundAny = true
-                newExtractorLink(
-                    "DirectMP4",
-                    "DirectMP4",
-                    link,
-                    pageUrl,
-                    ExtractorLinkType.VIDEO,
-                    callback
-                )
-                return@forEach
-            }
+if (low.contains(".mp4")) {
+    foundAny = true
+    callback(
+        newExtractorLink(
+            "DirectMP4",
+            "DirectMP4",
+            link,
+            ExtractorLinkType.VIDEO
+        )
+    )
+    return@forEach
+}
 
             // ✅ Direct M3U8
-            if (low.contains(".m3u8")) {
-                foundAny = true
-                newExtractorLink(
-                    "HLS",
-                    "HLS",
-                    link,
-                    pageUrl,
-                    ExtractorLinkType.M3U8,
-                    callback
-                )
-                return@forEach
-            }
+if (low.contains(".m3u8")) {
+    foundAny = true
+    callback(
+        newExtractorLink(
+            "HLS",
+            "HLS",
+            link,
+            ExtractorLinkType.M3U8
+        )
+    )
+    return@forEach
+}
 
             // ✅ Extractor hosters
             foundAny = true
