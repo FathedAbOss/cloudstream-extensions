@@ -456,32 +456,33 @@ class WeCimaProvider : MainAPI() {
         finalLinks.forEach { link ->
             val l = link.lowercase()
 
-            // ✅ direct media
+            // ✅ direct media (FIXED newExtractorLink usage)
             if (l.contains(".mp4") || l.contains(".m3u8")) {
                 val isM3u8 = l.contains(".m3u8")
+
                 callback.invoke(
                     newExtractorLink(
                         source = name,
                         name = "WeCima Direct",
-                        urlbaseurl = link,
-                        referer = pageUrl
-                    ) {
-                        this.quality = Qualities.Unknown.value
-                        this.isM3u8 = isM3u8
-                        this.headers = mapOf(
+                        url = link,
+                        referer = pageUrl,
+                        quality = Qualities.Unknown.value,
+                        isM3u8 = isM3u8,
+                        headers = mapOf(
                             "User-Agent" to USER_AGENT,
                             "Referer" to pageUrl
                         )
-                    }
+                    )
                 )
+
                 foundAny = true
                 return@forEach
             }
 
             // ✅ normal extractors
             try {
-                loadExtractor(link, pageUrl, subtitleCallback, callback)
-                foundAny = true
+                val ok = loadExtractor(link, pageUrl, subtitleCallback, callback)
+                if (ok) foundAny = true
             } catch (_: Throwable) {
                 // ignore
             }
