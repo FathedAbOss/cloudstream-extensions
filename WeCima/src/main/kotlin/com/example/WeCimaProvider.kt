@@ -2,6 +2,7 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.LinkedHashMap
@@ -165,10 +166,12 @@ class WeCimaProvider : MainAPI() {
         val out = LinkedHashSet<String>()
         val html = this.html()
 
+        // MP4 / M3U8
         Regex("""https?://[^\s"'<>]+?\.(mp4|m3u8)(\?[^\s"'<>]+)?""", RegexOption.IGNORE_CASE)
             .findAll(html)
             .forEach { out.add(it.value) }
 
+        // file: "https://..."
         Regex("""file\s*:\s*["'](https?://[^"']+)["']""", RegexOption.IGNORE_CASE)
             .findAll(html)
             .forEach { out.add(it.groupValues[1]) }
@@ -180,11 +183,13 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
+        // 1) data-watch (MOST IMPORTANT)
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // 2) other data attr patterns
         val attrs = listOf("data-url", "data-href", "data-embed", "data-src", "data-link")
         for (a in attrs) {
             this.select("[$a]").forEach {
@@ -193,11 +198,13 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
+        // 3) iframes
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
+        // 4) onclick with URL
         this.select("[onclick]").forEach {
             val oc = it.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
@@ -215,6 +222,7 @@ class WeCimaProvider : MainAPI() {
         val isInternal = fixed.contains("wecima") || fixed.startsWith(mainUrl)
         if (!isInternal) return listOf(fixed)
 
+        // internal but not player/watch
         if (!(fixed.contains("watch") || fixed.contains("player") || fixed.contains("play") || fixed.contains("مشاهدة"))) {
             return listOf(fixed)
         }
@@ -229,7 +237,10 @@ class WeCimaProvider : MainAPI() {
             ).document
 
             val out = LinkedHashSet<String>()
+
             out.addAll(doc.extractServersFast())
+
+            // ✅ also extract direct MP4/M3U8
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
             if (out.isEmpty()) listOf(fixed) else out.toList()
@@ -242,11 +253,12 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
         val found = LinkedHashMap<String, Episode>()
 
+        // WeCima sometimes uses buttons/cards
         val candidates = this.select(
-            "a[href*=%D8%A7%D9%84%D8%AD%D9%84%D9%82%D8%A9], " +
-                "a:contains(الحلقة), a:contains(مشاهدة), " +
-                "a[href*=/episode], a[href*=/episodes], " +
-                "a[href*=%D9%85%D8%B4%D8%A7%D9%87%D8%AF%D8%A9-%D9%85%D8%B3%D9%84%D8%B3%D9%84]"
+            "a[href*=%D8%A7%D9%84%D8%AD%D9%84%D9%82%D8%A9], " + // الحلقة in url
+                    "a:contains(الحلقة), a:contains(مشاهدة), " +
+                    "a[href*=/episode], a[href*=/episodes], " +
+                    "a[href*=%D9%85%D8%B4%D8%A7%D9%87%D8%AF%D8%A9-%D9%85%D8%B3%D9%84%D8%B3%D9%84]" // مشاهدة-مسلسل
         )
 
         candidates.forEach { a ->
@@ -258,6 +270,7 @@ class WeCimaProvider : MainAPI() {
 
             val rawName = a.text().trim().ifBlank { "حلقة" }
 
+            // episode number from text or url
             val epNum =
                 Regex("""الحلقة\s*(\d{1,4})""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
                     ?: Regex("""[-/](\d{1,4})(?:/)?$""").find(link)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -297,6 +310,7 @@ class WeCimaProvider : MainAPI() {
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
         )
 
+        // ✅ limit OG fetch to avoid slow main page
         val ogLimit = 20
         var ogCount = 0
 
@@ -369,6 +383,7 @@ class WeCimaProvider : MainAPI() {
         val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
         val type = guessTypeFrom(url, title)
 
+        // ✅ SERIES
         if (type == TvType.TvSeries) {
             val episodes = doc.extractEpisodes(url)
 
@@ -379,6 +394,7 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
+        // ✅ MOVIE / ANIME-MOVIE
         return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
             this.posterHeaders = this@WeCimaProvider.posterHeaders
@@ -403,9 +419,14 @@ class WeCimaProvider : MainAPI() {
         val doc = app.get(pageUrl, headers = safeHeaders).document
 
         val servers = LinkedHashSet<String>()
+
+        // ✅ 1) direct MP4/M3U8 first
         doc.extractDirectMediaFromScripts().forEach { servers.add(it) }
+
+        // ✅ 2) data-watch / iframe / onclick
         doc.extractServersFast().forEach { servers.add(it) }
 
+        // ✅ Retry with slightly different referer if empty
         if (servers.isEmpty()) {
             val retryDoc = app.get(
                 pageUrl,
@@ -421,6 +442,7 @@ class WeCimaProvider : MainAPI() {
 
         if (servers.isEmpty()) return false
 
+        // ✅ resolve internal links one step
         val finalLinks = LinkedHashSet<String>()
         val takeN = min(servers.size, 40)
 
@@ -435,17 +457,23 @@ class WeCimaProvider : MainAPI() {
         finalLinks.forEach { link ->
             val l = link.lowercase()
 
-            // ✅ direct media (FIXED ordering to match your API)
+            // ✅ direct media (FIXED: using 'type' instead of 'isM3u8')
             if (l.contains(".mp4") || l.contains(".m3u8")) {
-                val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                val isM3u8 = l.contains(".m3u8")
+                val type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
                 callback.invoke(
-                    newExtractorLink(
-                        name,              // source (String)
-                        "WeCima Direct",    // name (String)
-                        link,              // url (String)
-                        type,              // type (ExtractorLinkType?)
-                        pageUrl             // referer (String)
+                    ExtractorLink(
+                        source = name,
+                        name = "WeCima Direct",
+                        url = link,
+                        referer = pageUrl,
+                        quality = Qualities.Unknown.value,
+                        type = type, // ✅ Fixed: using 'type' parameter
+                        headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to pageUrl
+                        )
                     )
                 )
 
@@ -455,8 +483,8 @@ class WeCimaProvider : MainAPI() {
 
             // ✅ normal extractors
             try {
-                loadExtractor(link, pageUrl, subtitleCallback, callback)
-                foundAny = true
+                val ok = loadExtractor(link, pageUrl, subtitleCallback, callback)
+                if (ok) foundAny = true
             } catch (_: Throwable) {
                 // ignore
             }
