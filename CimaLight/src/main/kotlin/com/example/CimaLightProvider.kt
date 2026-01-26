@@ -176,35 +176,36 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ✅ FIXED: Emit direct mp4/m3u8 by creating an ExtractorLink and invoking callback
-    private fun emitDirectMedia(
-        url: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        val l = url.lowercase()
-        if (!l.contains(".mp4") && !l.contains(".m3u8")) return false
+// Emit direct mp4/m3u8 using newExtractorLink
+private suspend fun emitDirectMedia(
+    url: String,
+    referer: String,
+    callback: (ExtractorLink) -> Unit
+): Boolean {
+    val l = url.lowercase()
+    val isM3u8 = l.contains(".m3u8")
+    val isMp4 = l.contains(".mp4")
+    if (!isM3u8 && !isMp4) return false
 
-        val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+    val type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
-        // newExtractorLink is intended to be used like newDrmExtractorLink:
-        // callback.invoke(newExtractorLink(...)) :contentReference[oaicite:1]{index=1}
-        callback.invoke(
-            newExtractorLink(
-                source = name,
-                name = "CimaLight Direct",
-                url = url,
-                type = type
-            ) {
-                this.referer = referer
-                this.headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to referer
-                )
-            }
+    val link = newExtractorLink(
+        source = name,
+        name = "CimaLight Direct",
+        url = url,
+        type = type
+    ) {
+        this.referer = referer
+        this.quality = Qualities.Unknown.value
+        this.headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to referer
         )
-
-        return true
     }
+
+    callback.invoke(link)
+    return true
+}
 
     // ---------------------------
     // Main / Search
