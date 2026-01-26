@@ -416,13 +416,15 @@ class WeCimaProvider : MainAPI() {
             if (low.contains(".mp4")) {
                 foundAny = true
                 callback(
-                    newExtractorLink(
-                        "DirectMP4",
-                        "DirectMP4",
-                        link,
-                        pageUrl
-                    )
-                )
+    newExtractorLink(
+        "DirectMP4",
+        "DirectMP4",
+        link,
+        ExtractorLinkType.VIDEO,
+        pageUrl
+    )
+)
+
                 return@forEach
             }
 
@@ -430,13 +432,15 @@ class WeCimaProvider : MainAPI() {
             if (low.contains(".m3u8")) {
                 foundAny = true
                 callback(
-                    newExtractorLink(
-                        "HLS",
-                        "HLS",
-                        link,
-                        pageUrl
-                    )
-                )
+    newExtractorLink(
+        "HLS",
+        "HLS",
+        link,
+        ExtractorLinkType.M3U8,
+        pageUrl
+    )
+)
+
                 return@forEach
             }
 
