@@ -175,7 +175,7 @@ class CimaLightProvider : MainAPI() {
         return out.toList()
     }
 
-    // Emit direct mp4/m3u8 using newExtractorLink in your API version
+    // ✅ FIXED: Emit direct mp4/m3u8 by creating an ExtractorLink and invoking callback
     private fun emitDirectMedia(
         url: String,
         referer: String,
@@ -185,14 +185,22 @@ class CimaLightProvider : MainAPI() {
         if (!l.contains(".mp4") && !l.contains(".m3u8")) return false
 
         val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-        val suspendCb: suspend (ExtractorLink) -> Unit = { el -> callback(el) }
 
-        newExtractorLink(
-            name,
-            "CimaLight Direct",
-            url,
-            type,
-            suspendCb
+        // newExtractorLink is intended to be used like newDrmExtractorLink:
+        // callback.invoke(newExtractorLink(...)) :contentReference[oaicite:1]{index=1}
+        callback.invoke(
+            newExtractorLink(
+                source = name,
+                name = "CimaLight Direct",
+                url = url,
+                type = type
+            ) {
+                this.referer = referer
+                this.headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to referer
+                )
+            }
         )
 
         return true
