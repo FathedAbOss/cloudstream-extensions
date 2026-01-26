@@ -69,9 +69,7 @@ class WeCimaProvider : MainAPI() {
         if (!t.isNullOrBlank()) return t
 
         val imgAlt = this.selectFirst("img")?.attr("alt")?.trim()
-        if (!imgAlt.isNotBlank()) {
-            // continue
-        } else return imgAlt
+        if (!imgAlt.isNullOrBlank()) return imgAlt
 
         val at = a.text()?.trim()
         if (!at.isNullOrBlank() && at.length > 2) return at
@@ -405,7 +403,6 @@ class WeCimaProvider : MainAPI() {
         val doc = app.get(pageUrl, headers = safeHeaders).document
 
         val servers = LinkedHashSet<String>()
-
         doc.extractDirectMediaFromScripts().forEach { servers.add(it) }
         doc.extractServersFast().forEach { servers.add(it) }
 
@@ -438,26 +435,21 @@ class WeCimaProvider : MainAPI() {
         finalLinks.forEach { link ->
             val l = link.lowercase()
 
-            // ✅ direct media (MAX compatibility: no headers parameter)
+            // ✅ direct media (MAX compatibility for your API)
             if (l.contains(".mp4") || l.contains(".m3u8")) {
-                val isM3u8 = l.contains(".m3u8")
-
                 callback.invoke(
                     newExtractorLink(
-                        source = name,
-                        name = "WeCima Direct",
-                        url = link,
-                        referer = pageUrl,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = isM3u8
+                        name,
+                        "WeCima Direct",
+                        link,
+                        pageUrl
                     )
                 )
-
                 foundAny = true
                 return@forEach
             }
 
-            // ✅ normal extractors (don’t assume boolean return type)
+            // ✅ normal extractors
             try {
                 loadExtractor(link, pageUrl, subtitleCallback, callback)
                 foundAny = true
