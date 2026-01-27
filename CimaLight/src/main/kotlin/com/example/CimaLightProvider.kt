@@ -2,6 +2,7 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URI
@@ -24,7 +25,8 @@ class CimaLightProvider : MainAPI() {
     // ✅ Performance limits (IMPORTANT)
     private val MAX_FINAL_LINKS = 12           // stop after finding enough playable links
     private val MAX_TOTAL_CANDIDATES = 120     // hard cap overall candidates processed
-    private val MAX_INTERNAL_RESOLVES = 18     // hard cap internal page resolves
+    private val MAX_INTERNAL_RESOLVES = 10     // lowered: internal resolves are expensive
+    private val PER_CANDIDATE_TIMEOUT_MS = 9000L
 
     override val mainPage = mainPageOf(
         "$mainUrl/movies.php" to "أحدث الأفلام",
@@ -116,19 +118,19 @@ class CimaLightProvider : MainAPI() {
 
             val looksUseful =
                 h.contains(".m3u8") ||
-                h.contains(".mp4") ||
-                h.contains("multiup") ||
-                h.contains("embed") ||
-                h.contains("player") ||
-                h.contains("stream") ||
-                h.contains("ok.ru") ||
-                h.contains("uqload") ||
-                h.contains("vidoza") ||
-                h.contains("filemoon") ||
-                h.contains("dood") ||
-                h.contains("mixdrop") ||
-                h.contains("streamtape") ||
-                h.contains("cimalight")
+                    h.contains(".mp4") ||
+                    h.contains("multiup") ||
+                    h.contains("embed") ||
+                    h.contains("player") ||
+                    h.contains("stream") ||
+                    h.contains("ok.ru") ||
+                    h.contains("uqload") ||
+                    h.contains("vidoza") ||
+                    h.contains("filemoon") ||
+                    h.contains("dood") ||
+                    h.contains("mixdrop") ||
+                    h.contains("streamtape") ||
+                    h.contains("cimalight")
 
             if (looksUseful) out.add(href)
         }
@@ -176,11 +178,6 @@ class CimaLightProvider : MainAPI() {
         }
 
         return url to doc
-    }
-
-    private fun needsOneStepFollow(url: String): Boolean {
-        val u = url.lowercase()
-        return u.contains("elif.news") || u.contains("alhakekanet.net")
     }
 
     // ---------------------------
@@ -240,7 +237,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Internal resolver (bounded)
+    // Internal resolver (LIGHT)
     // ---------------------------
     private fun isInternal(url: String): Boolean {
         val u = url.lowercase()
@@ -252,7 +249,13 @@ class CimaLightProvider : MainAPI() {
         return u.contains("player") || u.contains("embed") || u.contains("play") || u.contains("watch")
     }
 
-    private suspend fun resolveInternalCimaOnce(url: String, referer: String): List<String> {
+    /**
+     * ✅ Light internal resolve:
+     * - one fetch + optional js/meta redirect follow once
+     * - extract iframe/data/src and direct media
+     * - DO NOT recursively expand more internal pages
+     */
+    private suspend fun resolveInternalCimaLightOnce(url: String, referer: String): List<String> {
         val fixed = url.trim()
         if (fixed.isBlank() || !fixed.startsWith("http")) return emptyList()
         if (!isInternal(fixed)) return listOf(fixed)
@@ -265,14 +268,15 @@ class CimaLightProvider : MainAPI() {
             val (finalUrl, doc) = getDocFollowRedirectOnce(fixed, referer) ?: return@runCatching
             out.add(finalUrl)
 
+            // ✅ فقط استخراج مباشر بدون توسعة إضافية
             doc.extractServersSmart().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-            // expand only a little
+            // ✅ توسعة data-watch محدودة جداً (2 فقط)
             doc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
-                .take(10)
+                .take(2)
                 .forEach { dw ->
                     runCatching { expandDataWatchLink(dw, finalUrl).forEach { out.add(it) } }
                 }
@@ -295,6 +299,25 @@ class CimaLightProvider : MainAPI() {
     private fun isDirectMedia(url: String): Boolean {
         val u = url.lowercase()
         return u.contains(".m3u8") || u.contains(".mp4")
+    }
+
+    private fun priorityScore(url: String): Int {
+        val u = url.lowercase()
+        // أقل رقم = أولوية أعلى
+        return when {
+            u.contains(".m3u8") -> 0
+            u.contains(".mp4") -> 1
+            // hosts common (good hit-rate)
+            u.contains("voe") -> 2
+            u.contains("streamwish") || u.contains("wish") -> 3
+            u.contains("mixdrop") -> 4
+            u.contains("filemoon") -> 5
+            u.contains("dood") -> 6
+            u.contains("streamtape") -> 7
+            // internal players آخر شيء (غالي)
+            isInternal(url) && looksLikeInternalPlayer(url) -> 50
+            else -> 20
+        }
     }
 
     private suspend fun emitDirectMedia(
@@ -433,7 +456,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks (FAST + MULTI)
+    // LoadLinks (AGGREGATE + PRIORITY + LIMITS)
     // ---------------------------
     override suspend fun loadLinks(
         data: String,
@@ -470,7 +493,19 @@ class CimaLightProvider : MainAPI() {
             callback(it)
         }
 
-        suspend fun tryExtractor(u: String, referer: String) {
+        fun addCandidates(doc: Document, out: LinkedHashSet<String>) {
+            doc.extractServersSmart().forEach { out.add(it) }
+            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+
+            // ✅ لا توسعة data-watch هنا (للسرعة) — فقط اجمعها كروابط خام
+            doc.select("[data-watch]")
+                .mapNotNull { it.attr("data-watch")?.trim() }
+                .filter { it.isNotBlank() }
+                .take(12)
+                .forEach { out.add(fixUrl(it)) }
+        }
+
+        suspend fun tryOneCandidate(u: String, referer: String) {
             if (emittedCount >= MAX_FINAL_LINKS) return
             val url = u.trim()
             if (url.isBlank() || !url.startsWith("http")) return
@@ -479,59 +514,52 @@ class CimaLightProvider : MainAPI() {
             val key = (url + "|" + referer).lowercase()
             if (!visited.add(key)) return
 
-            // direct
+            // direct media سريع
             if (emitDirectMedia(url, referer, cb)) return
 
-            // only use loadExtractor on EXTERNAL urls
+            // external: استخدم extractor مباشرة
             if (!isInternal(url)) {
                 runCatching { loadExtractor(url, referer, subtitleCallback, cb) }
                 return
             }
 
-            // internal resolve (bounded)
-            if (internalResolveCount >= MAX_INTERNAL_RESOLVES) return
+            // internal: resolve LIGHT وبحدود
             if (!looksLikeInternalPlayer(url)) return
+            if (internalResolveCount >= MAX_INTERNAL_RESOLVES) return
 
             internalResolveCount++
-            val expanded = resolveInternalCimaOnce(url, referer)
-            expanded.distinct().take(40).forEach { x ->
+
+            val expanded = resolveInternalCimaLightOnce(url, referer)
+                .distinct()
+                .filter { it.startsWith("http") }
+                .filter { !looksLikeBadLink(it) }
+                .take(25)
+
+            // ✅ بعد التوسعة الخفيفة: جرّب direct ثم external فقط
+            for (x in expanded) {
                 if (emittedCount >= MAX_FINAL_LINKS) return
-                if (looksLikeBadLink(x)) return@forEach
-                if (emitDirectMedia(x, url, cb)) return@forEach
-                if (x.startsWith("http") && !isInternal(x)) {
+                if (emitDirectMedia(x, url, cb)) continue
+                if (!isInternal(x)) {
                     runCatching { loadExtractor(x, url, subtitleCallback, cb) }
                 }
             }
         }
 
-        fun addCandidates(doc: Document, out: LinkedHashSet<String>) {
-            doc.extractServersSmart().forEach { out.add(it) }
-            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-
-            // expand a few data-watch only (speed!)
-            doc.select("[data-watch]")
-                .mapNotNull { it.attr("data-watch")?.trim() }
-                .filter { it.isNotBlank() }
-                .take(10)
-                .forEach { out.add(fixUrl(it)) }
-        }
-
         val candidates = LinkedHashSet<String>()
 
-        // 1) play.php first (usually fastest for servers)
+        // 1) play.php first
         val playUrl = "$mainUrl/play.php?vid=$vid"
         runCatching {
             val playDoc = app.get(playUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(playDoc, candidates)
         }
 
-        // 2) downloads.php second (more mirrors)
+        // 2) downloads.php second
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         runCatching {
             val dlDoc = app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(dlDoc, candidates)
 
-            // important: often servers only exist as a[href]
             dlDoc.select("a[href]")
                 .mapNotNull { fixUrlNull(it.attr("href").trim()) }
                 .filter { it.startsWith("http") }
@@ -541,11 +569,23 @@ class CimaLightProvider : MainAPI() {
                 .forEach { candidates.add(it) }
         }
 
-        // 3) process candidates with hard caps
-        val finalList = candidates.toList().distinct().take(MAX_TOTAL_CANDIDATES)
+        // 3) AGGREGATE STRATEGY: dedupe + priority + limit
+        val finalList = candidates
+            .asSequence()
+            .distinct()
+            .filter { it.startsWith("http") }
+            .filter { !looksLikeBadLink(it) }
+            .sortedWith(compareBy<String> { priorityScore(it) }.thenBy { it.length })
+            .take(MAX_TOTAL_CANDIDATES)
+            .toList()
+
+        // 4) process with per-candidate timeout
         for (link in finalList) {
             if (emittedCount >= MAX_FINAL_LINKS) break
-            tryExtractor(link, playUrl)
+
+            withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
+                tryOneCandidate(link, playUrl)
+            }
         }
 
         return emittedCount > 0
