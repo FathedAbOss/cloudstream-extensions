@@ -404,12 +404,39 @@ class CimaLightProvider : MainAPI() {
             val title = a.text().trim()
             val link = fixUrl(a.attr("href").trim())
             if (title.isBlank() || link.isBlank()) return@mapNotNull null
-            if (!link.contains("cimalight", ignoreCase = true)) return@mapNotNull null
+override suspend fun search(query: String): List<SearchResponse> {
+    val q = URLEncoder.encode(query.trim(), "UTF-8")
+    val url = "$mainUrl/search.php?keywords=$q&video-id="
+    val document = app.get(url, headers = safeHeaders).document
 
-            val poster = extractPosterFromAnchor(a)
-            newMovieSearchResponse(title, link, TvType.Movie) { this.posterUrl = poster }
-        }.distinctBy { it.url }
-    }
+    // pick broad selectors because layouts vary
+    val anchors = document.select("a[href]")
+    return anchors.mapNotNull { a ->
+        val title = a.text().trim()
+        if (title.isBlank()) return@mapNotNull null
+
+        val hrefRaw = a.attr("href").trim()
+        if (hrefRaw.isBlank()) return@mapNotNull null
+
+        val link = fixUrl(hrefRaw)
+        if (!link.startsWith("http")) return@mapNotNull null
+
+        // ✅ keep only internal items (works with relative + your domain)
+        val isInternal = link.contains("cimalight", ignoreCase = true) || link.startsWith(mainUrl)
+        if (!isInternal) return@mapNotNull null
+
+        // try to infer type a bit (optional but helpful)
+        val lower = (title + " " + link).lowercase()
+        val tvType = if (lower.contains("مسلسل") || lower.contains("الحلقة") || lower.contains("season") || lower.contains("episode"))
+            TvType.TvSeries else TvType.Movie
+
+        val poster = extractPosterFromAnchor(a)
+
+        newMovieSearchResponse(title, link, tvType) {
+            this.posterUrl = poster
+        }
+    }.distinctBy { it.url }
+}
 
     // ---------------------------
     // Load (Movie vs Series)
