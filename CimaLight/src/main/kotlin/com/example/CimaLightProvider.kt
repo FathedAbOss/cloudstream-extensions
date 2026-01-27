@@ -135,7 +135,7 @@ class CimaLightProvider : MainAPI() {
                     h.contains("mixdrop") ||
                     h.contains("streamtape") ||
                     h.contains("cimalight") ||
-                    h.contains("elif.news")   // ✅ NEW: watch page gateway
+                    h.contains("elif.news")
 
             if (looksUseful) out.add(href)
         }
@@ -242,17 +242,13 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // NEW: elif.news resolver
+    // elif.news resolver
     // ---------------------------
     private fun isElif(url: String): Boolean {
         val u = url.lowercase()
         return u.contains("elif.news")
     }
 
-    /**
-     * Fetch elif.news using strong Referer, extract iframe/direct media, then return real host urls.
-     * This avoids slow/failed loadExtractor on elif itself.
-     */
     private suspend fun resolveElifOnce(url: String, referer: String): List<String> {
         val out = LinkedHashSet<String>()
         val fixed = url.trim()
@@ -266,13 +262,8 @@ class CimaLightProvider : MainAPI() {
 
         val doc = runCatching { app.get(fixed, headers = headers).document }.getOrNull() ?: return emptyList()
 
-        // direct media in scripts
         doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-
-        // iframe chain
         doc.select("iframe[src]").forEach { out.add(fixUrl(it.attr("src").trim())) }
-
-        // sometimes data-* contains real player url
         doc.extractServersSmart().forEach { out.add(it) }
 
         return out.toList()
@@ -392,51 +383,40 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Search
+    // Search (FIXED)
     // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
         val url = "$mainUrl/search.php?keywords=$q&video-id="
         val document = app.get(url, headers = safeHeaders).document
 
-        val anchors = document.select("h3 a, h2 a, .Thumb--GridItem a, .Thumb--Grid a")
+        val anchors = document.select("a[href]")
         return anchors.mapNotNull { a ->
             val title = a.text().trim()
-            val link = fixUrl(a.attr("href").trim())
-            if (title.isBlank() || link.isBlank()) return@mapNotNull null
-override suspend fun search(query: String): List<SearchResponse> {
-    val q = URLEncoder.encode(query.trim(), "UTF-8")
-    val url = "$mainUrl/search.php?keywords=$q&video-id="
-    val document = app.get(url, headers = safeHeaders).document
+            if (title.isBlank()) return@mapNotNull null
 
-    // pick broad selectors because layouts vary
-    val anchors = document.select("a[href]")
-    return anchors.mapNotNull { a ->
-        val title = a.text().trim()
-        if (title.isBlank()) return@mapNotNull null
+            val hrefRaw = a.attr("href").trim()
+            if (hrefRaw.isBlank()) return@mapNotNull null
 
-        val hrefRaw = a.attr("href").trim()
-        if (hrefRaw.isBlank()) return@mapNotNull null
+            val link = fixUrl(hrefRaw)
+            if (!link.startsWith("http")) return@mapNotNull null
 
-        val link = fixUrl(hrefRaw)
-        if (!link.startsWith("http")) return@mapNotNull null
+            val isInternal = link.contains("cimalight", ignoreCase = true) || link.startsWith(mainUrl)
+            if (!isInternal) return@mapNotNull null
 
-        // ✅ keep only internal items (works with relative + your domain)
-        val isInternal = link.contains("cimalight", ignoreCase = true) || link.startsWith(mainUrl)
-        if (!isInternal) return@mapNotNull null
+            val lower = (title + " " + link).lowercase()
+            val tvType = if (
+                lower.contains("مسلسل") || lower.contains("الحلقة") ||
+                lower.contains("season") || lower.contains("episode")
+            ) TvType.TvSeries else TvType.Movie
 
-        // try to infer type a bit (optional but helpful)
-        val lower = (title + " " + link).lowercase()
-        val tvType = if (lower.contains("مسلسل") || lower.contains("الحلقة") || lower.contains("season") || lower.contains("episode"))
-            TvType.TvSeries else TvType.Movie
+            val poster = extractPosterFromAnchor(a)
 
-        val poster = extractPosterFromAnchor(a)
-
-        newMovieSearchResponse(title, link, tvType) {
-            this.posterUrl = poster
-        }
-    }.distinctBy { it.url }
-}
+            newMovieSearchResponse(title, link, tvType) {
+                this.posterUrl = poster
+            }
+        }.distinctBy { it.url }
+    }
 
     // ---------------------------
     // Load (Movie vs Series)
@@ -545,10 +525,9 @@ override suspend fun search(query: String): List<SearchResponse> {
             val key = (url + "|" + referer).lowercase()
             if (!visited.add(key)) return
 
-            // direct
             if (emitDirectMedia(url, referer, cb)) return
 
-            // ✅ special: elif.news gateway
+            // elif.news gateway
             if (isElif(url)) {
                 if (elifResolveCount >= MAX_ELIF_RESOLVES) return
                 elifResolveCount++
@@ -566,7 +545,6 @@ override suspend fun search(query: String): List<SearchResponse> {
                         if (!isInternal(x)) {
                             runCatching { loadExtractor(x, url, subtitleCallback, cb) }
                         } else {
-                            // allow one internal resolve at most from elif
                             if (internalResolveCount < MAX_INTERNAL_RESOLVES && looksLikeInternalPlayer(x)) {
                                 internalResolveCount++
                                 val expanded = resolveInternalCimaOnce(x, url)
@@ -584,13 +562,11 @@ override suspend fun search(query: String): List<SearchResponse> {
                 return
             }
 
-            // only use loadExtractor on EXTERNAL urls
             if (!isInternal(url)) {
                 runCatching { loadExtractor(url, referer, subtitleCallback, cb) }
                 return
             }
 
-            // internal resolve (bounded)
             if (internalResolveCount >= MAX_INTERNAL_RESOLVES) return
             if (!looksLikeInternalPlayer(url)) return
 
@@ -610,14 +586,12 @@ override suspend fun search(query: String): List<SearchResponse> {
             doc.extractServersSmart().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-            // expand a few data-watch only (speed!)
             doc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
                 .take(10)
                 .forEach { out.add(fixUrl(it)) }
 
-            // ✅ NEW: explicitly capture elif.news links from watch page
             doc.select("a[href*=\"elif.news\"]").forEach { a ->
                 val href = a.attr("href").trim()
                 if (href.isNotBlank()) out.add(fixUrl(href))
@@ -626,26 +600,25 @@ override suspend fun search(query: String): List<SearchResponse> {
 
         val candidates = LinkedHashSet<String>()
 
-        // ✅ NEW: watch page FIRST (important gateway link lives here)
+        // watch page FIRST
         runCatching {
             val watchDoc = app.get(watchUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")).document
             addCandidates(watchDoc, candidates)
         }
 
-        // 1) play.php first (usually fastest for servers)
+        // play.php
         val playUrl = "$mainUrl/play.php?vid=$vid"
         runCatching {
             val playDoc = app.get(playUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(playDoc, candidates)
         }
 
-        // 2) downloads.php second (more mirrors)
+        // downloads.php
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         runCatching {
             val dlDoc = app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(dlDoc, candidates)
 
-            // important: often servers only exist as a[href]
             dlDoc.select("a[href]")
                 .mapNotNull { fixUrlNull(it.attr("href").trim()) }
                 .filter { it.startsWith("http") }
@@ -655,12 +628,10 @@ override suspend fun search(query: String): List<SearchResponse> {
                 .forEach { candidates.add(it) }
         }
 
-        // 3) process candidates with hard caps
         val finalList = candidates.toList().distinct().take(MAX_TOTAL_CANDIDATES)
 
         for (link in finalList) {
             if (emittedCount >= MAX_FINAL_LINKS) break
-
             withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
                 tryExtractor(link, watchUrl)
             }
