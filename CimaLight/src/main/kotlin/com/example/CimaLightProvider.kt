@@ -77,7 +77,7 @@ class CimaLightProvider : MainAPI() {
         }
 
         // 2) common embed attributes
-        val attrs = listOf("data-embed-url", "data-url", "data-href", "data-embed", "data-src", "data-link")
+        val attrs = listOf("data-embed-url", "data-url", "data-href", "data-embed", "data-src", "data-link", "data-server")
         for (a in attrs) {
             this.select("[$a]").forEach {
                 val s = it.attr(a).trim()
@@ -102,6 +102,16 @@ class CimaLightProvider : MainAPI() {
         this.select("a[href]").forEach {
             val s = it.attr("href").trim()
             if (s.startsWith("http")) out.add(fixUrl(s))
+        }
+
+        // 6) NEW: List items used for server switching (common in wrappers like elif.news)
+        this.select("li[data-url], li[data-link], li[data-server], li[data-src]").forEach {
+            val s = it.attr("data-url")
+                .ifBlank { it.attr("data-link") }
+                .ifBlank { it.attr("data-server") }
+                .ifBlank { it.attr("data-src") }
+                .trim()
+            if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
         return out.toList()
@@ -148,28 +158,19 @@ class CimaLightProvider : MainAPI() {
         val slp = extractSlpWatchParam(fixed)
         val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
 
-        // If we can decode -> fetch decoded url and extract
-        if (!decodedUrl.isNullOrBlank()) {
-            out.add(decodedUrl)
-            runCatching {
-                val doc = app.get(
-                    decodedUrl,
-                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
-                ).document
-                doc.extractServersFast().forEach { out.add(it) }
-                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            }
-        } else {
-            // else: keep gateway and also try fetching it (sometimes returns iframe)
-            out.add(fixed)
-            runCatching {
-                val doc = app.get(
-                    fixed,
-                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
-                ).document
-                doc.extractServersFast().forEach { out.add(it) }
-                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            }
+        val targetUrl = if (!decodedUrl.isNullOrBlank()) decodedUrl else fixed
+        
+        // Add the target itself
+        out.add(targetUrl)
+
+        // Fetch and scrape the target
+        runCatching {
+            val doc = app.get(
+                targetUrl,
+                headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
+            ).document
+            doc.extractServersFast().forEach { out.add(it) }
+            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
         }
 
         return out.toList()
@@ -231,7 +232,7 @@ class CimaLightProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
-        val document = app.get("$mainUrl/search?q=$q", headers = safeHeaders).document
+        val document = app.get("$mainUrl/search.php?keywords=$q&video-id=", headers = safeHeaders).document
 
         return document.select("h3 a").mapNotNull { a ->
             val title = a.text().trim()
@@ -261,9 +262,31 @@ class CimaLightProvider : MainAPI() {
 
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // ✅ keep it as movie for now (your current behavior)
+        // 1) Attempt to parse Episodes (for Series)
+        // Common selectors for episodes list: .episodes, .list-parts, or similar structures
+        val episodes = document.select("div.Episodes--Seasons--Episodes a, .episodes a, #episodes a, .list-parts a")
+            .mapNotNull {
+                val href = fixUrl(it.attr("href"))
+                val name = it.text().trim()
+                if(href.isBlank()) null else Episode(href, name)
+            }
+
+        // If we found episodes, it's a Series
+        if (episodes.isNotEmpty()) {
+            return newTvSeriesLoadResponse(
+                name = title.ifBlank { "CimaLight Series" },
+                url = url,
+                type = TvType.TvSeries,
+                episodes = episodes
+            ) {
+                this.posterUrl = poster
+                this.plot = plot
+            }
+        }
+
+        // 2) Fallback: Treat as Movie
         return newMovieLoadResponse(
-            name = title.ifBlank { "CimaLight" },
+            name = title.ifBlank { "CimaLight Movie" },
             url = url,
             type = TvType.Movie,
             dataUrl = url
@@ -278,28 +301,35 @@ class CimaLightProvider : MainAPI() {
     // ---------------------------
 
     override suspend fun loadLinks(
-        data: String, // watch URL e.g. https://w.cimalight.co/watch.php?vid=xxxx
+        data: String, 
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        val watchUrl = data.trim()
+        var watchUrl = data.trim()
+
+        // ✅ If the link does NOT contain 'vid=', we might need to fetch the page 
+        // to find the actual watch link (Common for Series Episodes or if scraping main page)
+        if (!watchUrl.contains("vid=", ignoreCase = true)) {
+            val doc = runCatching { app.get(watchUrl, headers = safeHeaders).document }.getOrNull()
+            if (doc != null) {
+                // Try to find a link that looks like a watch link with vid=
+                val vidLink = doc.select("a[href*='vid=']").firstOrNull()?.attr("href")
+                if (!vidLink.isNullOrBlank()) {
+                    watchUrl = fixUrl(vidLink)
+                }
+            }
+        }
 
         val vid = Regex("vid=([A-Za-z0-9]+)")
             .find(watchUrl)
-            ?.groupValues
-            ?.getOrNull(1)
+            .groupValues
+            .getOrNull(1)
             ?: return false
 
         val collected = LinkedHashSet<String>()
-
-        // ✅ VIKTIGT: emitted = true bara när vi faktiskt skickat en länk till callback
-        var emitted = false
-        val cb: (ExtractorLink) -> Unit = {
-            emitted = true
-            callback(it)
-        }
+        var foundAny = false
 
         // ✅ STEP 1: Try streaming servers from play.php first
         val playUrl = "$mainUrl/play.php?vid=$vid"
@@ -309,8 +339,9 @@ class CimaLightProvider : MainAPI() {
         }.getOrNull()
 
         if (playDoc != null) {
-            playDoc.extractServersFast().forEach { collected.add(it) }
-            playDoc.extractDirectMediaFromScripts().forEach { collected.add(it) }
+            val initialLinks = LinkedHashSet<String>()
+            playDoc.extractServersFast().forEach { initialLinks.add(it) }
+            playDoc.extractDirectMediaFromScripts().forEach { initialLinks.add(it) }
 
             val dw = playDoc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
@@ -318,24 +349,38 @@ class CimaLightProvider : MainAPI() {
                 .take(25)
 
             dw.forEach { link ->
-                runCatching { expandDataWatchLink(link, playUrl).forEach { collected.add(it) } }
+                runCatching { expandDataWatchLink(link, playUrl).forEach { initialLinks.add(it) } }
+            }
+
+            // 🔥 NEW: Deep Scan for Wrapper Pages (like elif.news)
+            initialLinks.forEach { link ->
+                collected.add(link) 
+                if (!link.contains(".mp4") && !link.contains(".m3u8")) {
+                    runCatching {
+                        val embedDoc = app.get(link, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to playUrl)).document
+                        embedDoc.extractServersFast().forEach { collected.add(it) }
+                        embedDoc.extractDirectMediaFromScripts().forEach { collected.add(it) }
+                    }
+                }
             }
         }
 
-        // Emit what we got from play.php
+        // Emit from play.php
         collected.toList().distinct().forEach { link ->
-            if (emitDirectMedia(link, playUrl, cb)) return@forEach
-
+            if (emitDirectMedia(link, playUrl, callback)) {
+                foundAny = true
+                return@forEach
+            }
             if (link.startsWith("http") && !link.contains("cimalight", ignoreCase = true)) {
-                runCatching { loadExtractor(link, playUrl, subtitleCallback, cb) }
+                runCatching { loadExtractor(link, playUrl, subtitleCallback, callback) }
+                foundAny = true
             }
         }
 
-        if (emitted) return true
+        if (foundAny) return true
 
         // ✅ STEP 2: Fallback to downloads.php
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
-
         val downloadsDoc = runCatching {
             app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
         }.getOrNull() ?: return false
@@ -356,18 +401,17 @@ class CimaLightProvider : MainAPI() {
 
         // Expand MultiUp mirrors + emit
         dlCollected.toList().distinct().take(80).forEach { link ->
-            if (emitDirectMedia(link, downloadsUrl, cb)) return@forEach
+            if (emitDirectMedia(link, downloadsUrl, callback)) {
+                foundAny = true
+                return@forEach
+            }
 
             if (!link.startsWith("http")) return@forEach
             if (link.contains("cimalight", ignoreCase = true)) return@forEach
 
             runCatching {
                 if (link.contains("multiup.io", ignoreCase = true)) {
-                    val multiDoc = app.get(
-                        link,
-                        headers = mapOf("User-Agent" to USER_AGENT, "Referer" to downloadsUrl)
-                    ).document
-
+                    val multiDoc = app.get(link, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to downloadsUrl)).document
                     val mirrors = multiDoc.select("a[href]")
                         .mapNotNull { fixUrlNull(it.attr("href").trim()) }
                         .filter { it.startsWith("http") }
@@ -377,18 +421,19 @@ class CimaLightProvider : MainAPI() {
 
                     mirrors.forEach { mirror ->
                         runCatching {
-                            if (!emitDirectMedia(mirror, link, cb)) {
-                                loadExtractor(mirror, link, subtitleCallback, cb)
+                            if (!emitDirectMedia(mirror, link, callback)) {
+                                loadExtractor(mirror, link, subtitleCallback, callback)
                             }
                         }
                     }
+                    if (mirrors.isNotEmpty()) foundAny = true
                 } else {
-                    loadExtractor(link, downloadsUrl, subtitleCallback, cb)
+                    loadExtractor(link, downloadsUrl, subtitleCallback, callback)
+                    foundAny = true
                 }
             }
         }
 
-        // ✅ Returnera bara true om vi faktiskt skickade minst en riktig länk
-        return emitted
+        return foundAny
     }
 }
