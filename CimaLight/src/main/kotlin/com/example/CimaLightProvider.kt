@@ -175,7 +175,6 @@ class CimaLightProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ FIXED: Emit direct mp4/m3u8 by creating an ExtractorLink and invoking callback
     // Emit direct mp4/m3u8 using newExtractorLink
     private suspend fun emitDirectMedia(
         url: String,
@@ -232,8 +231,7 @@ class CimaLightProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
-        // Fixed: Use search.php instead of /search
-        val document = app.get("$mainUrl/search.php?q=$q", headers = safeHeaders).document
+        val document = app.get("$mainUrl/search?q=$q", headers = safeHeaders).document
 
         return document.select("h3 a").mapNotNull { a ->
             val title = a.text().trim()
@@ -295,7 +293,13 @@ class CimaLightProvider : MainAPI() {
             ?: return false
 
         val collected = LinkedHashSet<String>()
-        var foundAny = false
+
+        // ✅ VIKTIGT: emitted = true bara när vi faktiskt skickat en länk till callback
+        var emitted = false
+        val cb: (ExtractorLink) -> Unit = {
+            emitted = true
+            callback(it)
+        }
 
         // ✅ STEP 1: Try streaming servers from play.php first
         val playUrl = "$mainUrl/play.php?vid=$vid"
@@ -305,11 +309,9 @@ class CimaLightProvider : MainAPI() {
         }.getOrNull()
 
         if (playDoc != null) {
-            // collect obvious candidates
             playDoc.extractServersFast().forEach { collected.add(it) }
             playDoc.extractDirectMediaFromScripts().forEach { collected.add(it) }
 
-            // expand any data-watch gateways
             val dw = playDoc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
@@ -322,20 +324,14 @@ class CimaLightProvider : MainAPI() {
 
         // Emit what we got from play.php
         collected.toList().distinct().forEach { link ->
-            // direct media
-            if (emitDirectMedia(link, playUrl, callback)) {
-                foundAny = true
-                return@forEach
-            }
+            if (emitDirectMedia(link, playUrl, cb)) return@forEach
 
-            // external extractor
             if (link.startsWith("http") && !link.contains("cimalight", ignoreCase = true)) {
-                runCatching { loadExtractor(link, playUrl, subtitleCallback, callback) }
-                foundAny = true
+                runCatching { loadExtractor(link, playUrl, subtitleCallback, cb) }
             }
         }
 
-        if (foundAny) return true
+        if (emitted) return true
 
         // ✅ STEP 2: Fallback to downloads.php
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
@@ -360,17 +356,17 @@ class CimaLightProvider : MainAPI() {
 
         // Expand MultiUp mirrors + emit
         dlCollected.toList().distinct().take(80).forEach { link ->
-            if (emitDirectMedia(link, downloadsUrl, callback)) {
-                foundAny = true
-                return@forEach
-            }
+            if (emitDirectMedia(link, downloadsUrl, cb)) return@forEach
 
             if (!link.startsWith("http")) return@forEach
             if (link.contains("cimalight", ignoreCase = true)) return@forEach
 
             runCatching {
                 if (link.contains("multiup.io", ignoreCase = true)) {
-                    val multiDoc = app.get(link, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to downloadsUrl)).document
+                    val multiDoc = app.get(
+                        link,
+                        headers = mapOf("User-Agent" to USER_AGENT, "Referer" to downloadsUrl)
+                    ).document
 
                     val mirrors = multiDoc.select("a[href]")
                         .mapNotNull { fixUrlNull(it.attr("href").trim()) }
@@ -381,19 +377,18 @@ class CimaLightProvider : MainAPI() {
 
                     mirrors.forEach { mirror ->
                         runCatching {
-                            if (!emitDirectMedia(mirror, link, callback)) {
-                                loadExtractor(mirror, link, subtitleCallback, callback)
+                            if (!emitDirectMedia(mirror, link, cb)) {
+                                loadExtractor(mirror, link, subtitleCallback, cb)
                             }
                         }
                     }
-                    if (mirrors.isNotEmpty()) foundAny = true
                 } else {
-                    loadExtractor(link, downloadsUrl, subtitleCallback, callback)
-                    foundAny = true
+                    loadExtractor(link, downloadsUrl, subtitleCallback, cb)
                 }
             }
         }
 
-        return foundAny
+        // ✅ Returnera bara true om vi faktiskt skickade minst en riktig länk
+        return emitted
     }
 }
