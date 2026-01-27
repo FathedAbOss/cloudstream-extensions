@@ -22,12 +22,15 @@ class CimaLightProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // ✅ Performance limits
-    private val MAX_FINAL_LINKS = 12
-    private val MAX_TOTAL_CANDIDATES = 120   // keep collection large, but...
-    private val MAX_TRIES = 35               // ✅ hard cap of actual attempts (big speed win)
-    private val MAX_INTERNAL_RESOLVES = 10
-    private val PER_CANDIDATE_TIMEOUT_MS = 8500L
+    // ✅ Performance limits (IMPORTANT)
+    private val MAX_FINAL_LINKS = 12           // stop after finding enough playable links
+    private val MAX_TOTAL_CANDIDATES = 120     // hard cap overall candidates processed
+    private val MAX_INTERNAL_RESOLVES = 18     // hard cap internal page resolves
+    private val PER_CANDIDATE_TIMEOUT_MS = 9000L
+
+    // ✅ NEW: elif.news is expensive + can 403
+    private val MAX_ELIF_RESOLVES = 4
+    private val ELIF_TIMEOUT_MS = 9000L
 
     override val mainPage = mainPageOf(
         "$mainUrl/movies.php" to "أحدث الأفلام",
@@ -131,7 +134,8 @@ class CimaLightProvider : MainAPI() {
                     h.contains("dood") ||
                     h.contains("mixdrop") ||
                     h.contains("streamtape") ||
-                    h.contains("cimalight")
+                    h.contains("cimalight") ||
+                    h.contains("elif.news")   // ✅ NEW: watch page gateway
 
             if (looksUseful) out.add(href)
         }
@@ -216,17 +220,66 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
-    /**
-     * ✅ FAST: decode slp_watch without any extra network requests.
-     * If url contains slp_watch, returns decoded real url. Otherwise null.
-     */
-    private fun maybeDecodeSlpWatchFast(url: String): String? {
-        val slp = extractSlpWatchParam(url) ?: return null
-        return decodeSlpWatchUrl(slp)
+    private suspend fun expandDataWatchLink(dataWatchUrl: String, referer: String): List<String> {
+        val out = LinkedHashSet<String>()
+        val fixed = fixUrl(dataWatchUrl).trim()
+        if (fixed.isBlank()) return emptyList()
+
+        val slp = extractSlpWatchParam(fixed)
+        val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
+        val target = decodedUrl ?: fixed
+
+        out.add(target)
+
+        runCatching {
+            val (finalUrl, doc) = getDocFollowRedirectOnce(target, referer) ?: return@runCatching
+            out.add(finalUrl)
+            doc.extractServersSmart().forEach { out.add(it) }
+            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+        }
+
+        return out.toList()
     }
 
     // ---------------------------
-    // Internal resolver (LIGHT)
+    // NEW: elif.news resolver
+    // ---------------------------
+    private fun isElif(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("elif.news")
+    }
+
+    /**
+     * Fetch elif.news using strong Referer, extract iframe/direct media, then return real host urls.
+     * This avoids slow/failed loadExtractor on elif itself.
+     */
+    private suspend fun resolveElifOnce(url: String, referer: String): List<String> {
+        val out = LinkedHashSet<String>()
+        val fixed = url.trim()
+        if (fixed.isBlank() || !fixed.startsWith("http")) return emptyList()
+
+        val headers = mapOf(
+            "User-Agent" to USER_AGENT,
+            "Referer" to referer,
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        )
+
+        val doc = runCatching { app.get(fixed, headers = headers).document }.getOrNull() ?: return emptyList()
+
+        // direct media in scripts
+        doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+
+        // iframe chain
+        doc.select("iframe[src]").forEach { out.add(fixUrl(it.attr("src").trim())) }
+
+        // sometimes data-* contains real player url
+        doc.extractServersSmart().forEach { out.add(it) }
+
+        return out.toList()
+    }
+
+    // ---------------------------
+    // Internal resolver (bounded)
     // ---------------------------
     private fun isInternal(url: String): Boolean {
         val u = url.lowercase()
@@ -238,7 +291,7 @@ class CimaLightProvider : MainAPI() {
         return u.contains("player") || u.contains("embed") || u.contains("play") || u.contains("watch")
     }
 
-    private suspend fun resolveInternalCimaLightOnce(url: String, referer: String): List<String> {
+    private suspend fun resolveInternalCimaOnce(url: String, referer: String): List<String> {
         val fixed = url.trim()
         if (fixed.isBlank() || !fixed.startsWith("http")) return emptyList()
         if (!isInternal(fixed)) return listOf(fixed)
@@ -254,12 +307,13 @@ class CimaLightProvider : MainAPI() {
             doc.extractServersSmart().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-            // keep extremely small
             doc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
-                .take(2)
-                .forEach { out.add(fixUrl(it)) }
+                .take(10)
+                .forEach { dw ->
+                    runCatching { expandDataWatchLink(dw, finalUrl).forEach { out.add(it) } }
+                }
         }
 
         return out.toList()
@@ -279,23 +333,6 @@ class CimaLightProvider : MainAPI() {
     private fun isDirectMedia(url: String): Boolean {
         val u = url.lowercase()
         return u.contains(".m3u8") || u.contains(".mp4")
-    }
-
-    private fun priorityScore(url: String): Int {
-        val u = url.lowercase()
-        return when {
-            u.contains("slp_watch=") -> 0          // ✅ decode-first candidates at top
-            u.contains(".m3u8") -> 1
-            u.contains(".mp4") -> 2
-            u.contains("voe") -> 3
-            u.contains("streamwish") || u.contains("wish") -> 4
-            u.contains("mixdrop") -> 5
-            u.contains("filemoon") -> 6
-            u.contains("dood") -> 7
-            u.contains("streamtape") -> 8
-            isInternal(url) && looksLikeInternalPlayer(url) -> 50
-            else -> 20
-        }
     }
 
     private suspend fun emitDirectMedia(
@@ -434,7 +471,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks (DECODE-FIRST + HARD TRY LIMIT)
+    // LoadLinks (FAST + MULTI)
     // ---------------------------
     override suspend fun loadLinks(
         data: String,
@@ -445,6 +482,7 @@ class CimaLightProvider : MainAPI() {
 
         var watchUrl = data.trim()
 
+        // If user gave details page, locate watch.php?vid=...
         var vid = Regex("""vid=([A-Za-z0-9]+)""").find(watchUrl)?.groupValues?.getOrNull(1)
         if (vid.isNullOrBlank()) {
             val doc = runCatching {
@@ -463,6 +501,7 @@ class CimaLightProvider : MainAPI() {
 
         var emittedCount = 0
         var internalResolveCount = 0
+        var elifResolveCount = 0
         val visited = HashSet<String>()
 
         val cb: (ExtractorLink) -> Unit = {
@@ -470,82 +509,116 @@ class CimaLightProvider : MainAPI() {
             callback(it)
         }
 
-        fun addCandidates(doc: Document, out: LinkedHashSet<String>) {
-            doc.extractServersSmart().forEach { out.add(it) }
-            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-
-            // collect data-watch as-is (we decode-first later)
-            doc.select("[data-watch]")
-                .mapNotNull { it.attr("data-watch")?.trim() }
-                .filter { it.isNotBlank() }
-                .take(16)
-                .forEach { out.add(fixUrl(it)) }
-        }
-
-        suspend fun tryOneCandidate(u: String, referer: String) {
+        suspend fun tryExtractor(u: String, referer: String) {
             if (emittedCount >= MAX_FINAL_LINKS) return
             val url = u.trim()
             if (url.isBlank() || !url.startsWith("http")) return
             if (looksLikeBadLink(url)) return
 
-            // ✅ DECODE-FIRST
-            val decoded = maybeDecodeSlpWatchFast(url)
-            if (!decoded.isNullOrBlank() && decoded.startsWith("http")) {
-                // try decoded first (no extra request)
-                val keyDec = (decoded + "|" + referer).lowercase()
-                if (visited.add(keyDec)) {
-                    if (emitDirectMedia(decoded, referer, cb)) return
-                    if (!isInternal(decoded)) {
-                        runCatching { loadExtractor(decoded, referer, subtitleCallback, cb) }
-                        if (emittedCount >= MAX_FINAL_LINKS) return
-                    }
-                }
-            }
-
             val key = (url + "|" + referer).lowercase()
             if (!visited.add(key)) return
 
+            // direct
             if (emitDirectMedia(url, referer, cb)) return
 
-            // external
+            // ✅ special: elif.news gateway
+            if (isElif(url)) {
+                if (elifResolveCount >= MAX_ELIF_RESOLVES) return
+                elifResolveCount++
+
+                withTimeoutOrNull(ELIF_TIMEOUT_MS) {
+                    val realLinks = resolveElifOnce(url, referer)
+                        .distinct()
+                        .filter { it.startsWith("http") }
+                        .filter { !looksLikeBadLink(it) }
+                        .take(30)
+
+                    for (x in realLinks) {
+                        if (emittedCount >= MAX_FINAL_LINKS) return@withTimeoutOrNull
+                        if (emitDirectMedia(x, url, cb)) continue
+                        if (!isInternal(x)) {
+                            runCatching { loadExtractor(x, url, subtitleCallback, cb) }
+                        } else {
+                            // allow one internal resolve at most from elif
+                            if (internalResolveCount < MAX_INTERNAL_RESOLVES && looksLikeInternalPlayer(x)) {
+                                internalResolveCount++
+                                val expanded = resolveInternalCimaOnce(x, url)
+                                expanded.distinct().take(25).forEach { z ->
+                                    if (emittedCount >= MAX_FINAL_LINKS) return@withTimeoutOrNull
+                                    if (emitDirectMedia(z, x, cb)) return@forEach
+                                    if (z.startsWith("http") && !isInternal(z)) {
+                                        runCatching { loadExtractor(z, x, subtitleCallback, cb) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return
+            }
+
+            // only use loadExtractor on EXTERNAL urls
             if (!isInternal(url)) {
                 runCatching { loadExtractor(url, referer, subtitleCallback, cb) }
                 return
             }
 
-            // internal resolve (light + bounded)
-            if (!looksLikeInternalPlayer(url)) return
+            // internal resolve (bounded)
             if (internalResolveCount >= MAX_INTERNAL_RESOLVES) return
+            if (!looksLikeInternalPlayer(url)) return
+
             internalResolveCount++
-
-            val expanded = resolveInternalCimaLightOnce(url, referer)
-                .distinct()
-                .filter { it.startsWith("http") }
-                .filter { !looksLikeBadLink(it) }
-                .take(25)
-
-            for (x in expanded) {
+            val expanded = resolveInternalCimaOnce(url, referer)
+            expanded.distinct().take(40).forEach { x ->
                 if (emittedCount >= MAX_FINAL_LINKS) return
-                if (emitDirectMedia(x, url, cb)) continue
-                if (!isInternal(x)) {
+                if (looksLikeBadLink(x)) return@forEach
+                if (emitDirectMedia(x, url, cb)) return@forEach
+                if (x.startsWith("http") && !isInternal(x)) {
                     runCatching { loadExtractor(x, url, subtitleCallback, cb) }
                 }
             }
         }
 
+        fun addCandidates(doc: Document, out: LinkedHashSet<String>) {
+            doc.extractServersSmart().forEach { out.add(it) }
+            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+
+            // expand a few data-watch only (speed!)
+            doc.select("[data-watch]")
+                .mapNotNull { it.attr("data-watch")?.trim() }
+                .filter { it.isNotBlank() }
+                .take(10)
+                .forEach { out.add(fixUrl(it)) }
+
+            // ✅ NEW: explicitly capture elif.news links from watch page
+            doc.select("a[href*=\"elif.news\"]").forEach { a ->
+                val href = a.attr("href").trim()
+                if (href.isNotBlank()) out.add(fixUrl(href))
+            }
+        }
+
         val candidates = LinkedHashSet<String>()
 
+        // ✅ NEW: watch page FIRST (important gateway link lives here)
+        runCatching {
+            val watchDoc = app.get(watchUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")).document
+            addCandidates(watchDoc, candidates)
+        }
+
+        // 1) play.php first (usually fastest for servers)
         val playUrl = "$mainUrl/play.php?vid=$vid"
         runCatching {
             val playDoc = app.get(playUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(playDoc, candidates)
         }
 
+        // 2) downloads.php second (more mirrors)
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         runCatching {
             val dlDoc = app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(dlDoc, candidates)
 
+            // important: often servers only exist as a[href]
             dlDoc.select("a[href]")
                 .mapNotNull { fixUrlNull(it.attr("href").trim()) }
                 .filter { it.startsWith("http") }
@@ -555,24 +628,14 @@ class CimaLightProvider : MainAPI() {
                 .forEach { candidates.add(it) }
         }
 
-        // ✅ aggregate: dedupe + priority + hard try limit
-        val finalList = candidates
-            .asSequence()
-            .distinct()
-            .filter { it.startsWith("http") }
-            .filter { !looksLikeBadLink(it) }
-            .sortedWith(compareBy<String> { priorityScore(it) }.thenBy { it.length })
-            .take(MAX_TOTAL_CANDIDATES)
-            .toList()
+        // 3) process candidates with hard caps
+        val finalList = candidates.toList().distinct().take(MAX_TOTAL_CANDIDATES)
 
-        var tries = 0
         for (link in finalList) {
             if (emittedCount >= MAX_FINAL_LINKS) break
-            if (tries >= MAX_TRIES) break
-            tries++
 
             withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
-                tryOneCandidate(link, playUrl)
+                tryExtractor(link, watchUrl)
             }
         }
 
