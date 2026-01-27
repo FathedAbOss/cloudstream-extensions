@@ -112,18 +112,18 @@ class CimaLightProvider : MainAPI() {
             val h = href.lowercase()
             val looksUseful =
                 h.contains(".m3u8") ||
-                h.contains(".mp4") ||
-                h.contains("multiup") ||
-                h.contains("embed") ||
-                h.contains("player") ||
-                h.contains("stream") ||
-                h.contains("ok.ru") ||
-                h.contains("uqload") ||
-                h.contains("vidoza") ||
-                h.contains("filemoon") ||
-                h.contains("dood") ||
-                h.contains("mixdrop") ||
-                h.contains("streamtape")
+                        h.contains(".mp4") ||
+                        h.contains("multiup") ||
+                        h.contains("embed") ||
+                        h.contains("player") ||
+                        h.contains("stream") ||
+                        h.contains("ok.ru") ||
+                        h.contains("uqload") ||
+                        h.contains("vidoza") ||
+                        h.contains("filemoon") ||
+                        h.contains("dood") ||
+                        h.contains("mixdrop") ||
+                        h.contains("streamtape")
 
             if (looksUseful) out.add(fixUrl(href))
         }
@@ -410,13 +410,36 @@ class CimaLightProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        val watchUrl = data.trim()
+        // ✅ FIX: sometimes "data" is NOT watch.php?vid=...
+        // If no vid= found, fetch page once and extract watch.php?vid= as real watchUrl.
+        var watchUrl = data.trim()
 
-        val vid = Regex("""vid=([A-Za-z0-9]+)""")
+        var vid = Regex("""vid=([A-Za-z0-9]+)""")
             .find(watchUrl)
             ?.groupValues
             ?.getOrNull(1)
-            ?: return false
+
+        if (vid.isNullOrBlank()) {
+            val doc = runCatching {
+                app.get(watchUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")).document
+            }.getOrNull()
+
+            val extractedWatch = doc
+                ?.selectFirst("""a[href*="watch.php?vid="]""")
+                ?.attr("href")
+                ?.trim()
+                ?.let { fixUrl(it) }
+
+            if (!extractedWatch.isNullOrBlank()) {
+                watchUrl = extractedWatch
+                vid = Regex("""vid=([A-Za-z0-9]+)""")
+                    .find(watchUrl)
+                    ?.groupValues
+                    ?.getOrNull(1)
+            }
+        }
+
+        if (vid.isNullOrBlank()) return false
 
         var emittedAny = false
         val cb: (ExtractorLink) -> Unit = {
