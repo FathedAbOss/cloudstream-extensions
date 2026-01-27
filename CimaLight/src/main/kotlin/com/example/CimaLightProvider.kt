@@ -111,7 +111,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // JS/meta redirect helpers (Cloudstream doesn't run JS)
+    // JS/meta redirect helpers
     // ---------------------------
     private fun Document.extractJsOrMetaRedirect(): String? {
         // meta refresh
@@ -122,17 +122,14 @@ class CimaLightProvider : MainAPI() {
 
         val html = this.html()
 
-        // redirectUrl='https://...'
         Regex("""redirectUrl\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
 
-        // location.replace("https://...")
         Regex("""location\.replace\(\s*['"]([^'"]+)['"]\s*\)""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
 
-        // window.location = "https://..."
         Regex("""window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
@@ -303,8 +300,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Search (FIXED)
-    // Example: https://w.cimalight.co/search.php?keywords=avatar&video-id=
+    // Search (FIXED endpoint)
     // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
@@ -317,7 +313,6 @@ class CimaLightProvider : MainAPI() {
             val title = a.text().trim()
             val link = fixUrl(a.attr("href").trim())
             if (title.isBlank() || link.isBlank()) return@mapNotNull null
-
             if (!link.startsWith("http")) return@mapNotNull null
             if (!link.contains("cimalight", ignoreCase = true)) return@mapNotNull null
 
@@ -347,7 +342,6 @@ class CimaLightProvider : MainAPI() {
             ?.let { fixUrlNull(it) }
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // Try to detect episode list (series page)
         val episodeAnchors = document.select("a[href*=watch.php?vid=]")
         val episodeLinks = episodeAnchors
             .mapNotNull { a ->
@@ -366,14 +360,13 @@ class CimaLightProvider : MainAPI() {
                     ?.getOrNull(1)
                     ?.toIntOrNull()
 
-                // IMPORTANT: your newEpisode does NOT support named params.
-                // Use positional args: (url, name, season, episode)
-                newEpisode(
-                    eUrl,
-                    text.ifBlank { "Episode" },
-                    1,
-                    epNum
-                )
+                // ✅ Correct usage for your API:
+                // newEpisode(url) { ... }  (no named params for name/season/episode)
+                newEpisode(eUrl) {
+                    this.name = text.ifBlank { "Episode" }
+                    this.season = 1
+                    this.episode = epNum
+                }
             }.distinctBy { it.data }
 
             return newTvSeriesLoadResponse(
@@ -387,7 +380,6 @@ class CimaLightProvider : MainAPI() {
             }
         }
 
-        // Otherwise treat as a single movie/episode page
         return newMovieLoadResponse(
             name = title.ifBlank { "CimaLight" },
             url = url,
@@ -430,7 +422,6 @@ class CimaLightProvider : MainAPI() {
 
             val lower = u.lowercase()
 
-            // One-step follow for internal/gateway pages (cimalight/elif/alhakekanet)
             if (needsOneStepFollow(u)) {
                 val inner = runCatching { scrapeOneStepServers(u, referer) }.getOrNull().orEmpty()
                 inner.distinct().take(150).forEach { x ->
@@ -442,7 +433,6 @@ class CimaLightProvider : MainAPI() {
                 return
             }
 
-            // MultiUp mirrors
             if (lower.contains("multiup.io")) {
                 runCatching {
                     val doc = app.get(u, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
@@ -492,7 +482,7 @@ class CimaLightProvider : MainAPI() {
             processCandidate(link, playUrl)
         }
 
-        // 2) downloads.php (do not skip even if play works)
+        // 2) downloads.php (DO NOT SKIP)
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         val downloadsDoc = runCatching {
             app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
