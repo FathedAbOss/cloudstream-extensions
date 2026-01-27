@@ -22,11 +22,12 @@ class CimaLightProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // ✅ Performance limits (IMPORTANT)
-    private val MAX_FINAL_LINKS = 12           // stop after finding enough playable links
-    private val MAX_TOTAL_CANDIDATES = 120     // hard cap overall candidates processed
-    private val MAX_INTERNAL_RESOLVES = 10     // lowered: internal resolves are expensive
-    private val PER_CANDIDATE_TIMEOUT_MS = 9000L
+    // ✅ Performance limits
+    private val MAX_FINAL_LINKS = 12
+    private val MAX_TOTAL_CANDIDATES = 120   // keep collection large, but...
+    private val MAX_TRIES = 35               // ✅ hard cap of actual attempts (big speed win)
+    private val MAX_INTERNAL_RESOLVES = 10
+    private val PER_CANDIDATE_TIMEOUT_MS = 8500L
 
     override val mainPage = mainPageOf(
         "$mainUrl/movies.php" to "أحدث الأفلام",
@@ -215,25 +216,13 @@ class CimaLightProvider : MainAPI() {
         }
     }
 
-    private suspend fun expandDataWatchLink(dataWatchUrl: String, referer: String): List<String> {
-        val out = LinkedHashSet<String>()
-        val fixed = fixUrl(dataWatchUrl).trim()
-        if (fixed.isBlank()) return emptyList()
-
-        val slp = extractSlpWatchParam(fixed)
-        val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
-        val target = decodedUrl ?: fixed
-
-        out.add(target)
-
-        runCatching {
-            val (finalUrl, doc) = getDocFollowRedirectOnce(target, referer) ?: return@runCatching
-            out.add(finalUrl)
-            doc.extractServersSmart().forEach { out.add(it) }
-            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-        }
-
-        return out.toList()
+    /**
+     * ✅ FAST: decode slp_watch without any extra network requests.
+     * If url contains slp_watch, returns decoded real url. Otherwise null.
+     */
+    private fun maybeDecodeSlpWatchFast(url: String): String? {
+        val slp = extractSlpWatchParam(url) ?: return null
+        return decodeSlpWatchUrl(slp)
     }
 
     // ---------------------------
@@ -249,12 +238,6 @@ class CimaLightProvider : MainAPI() {
         return u.contains("player") || u.contains("embed") || u.contains("play") || u.contains("watch")
     }
 
-    /**
-     * ✅ Light internal resolve:
-     * - one fetch + optional js/meta redirect follow once
-     * - extract iframe/data/src and direct media
-     * - DO NOT recursively expand more internal pages
-     */
     private suspend fun resolveInternalCimaLightOnce(url: String, referer: String): List<String> {
         val fixed = url.trim()
         if (fixed.isBlank() || !fixed.startsWith("http")) return emptyList()
@@ -268,18 +251,15 @@ class CimaLightProvider : MainAPI() {
             val (finalUrl, doc) = getDocFollowRedirectOnce(fixed, referer) ?: return@runCatching
             out.add(finalUrl)
 
-            // ✅ فقط استخراج مباشر بدون توسعة إضافية
             doc.extractServersSmart().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-            // ✅ توسعة data-watch محدودة جداً (2 فقط)
+            // keep extremely small
             doc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
                 .take(2)
-                .forEach { dw ->
-                    runCatching { expandDataWatchLink(dw, finalUrl).forEach { out.add(it) } }
-                }
+                .forEach { out.add(fixUrl(it)) }
         }
 
         return out.toList()
@@ -303,18 +283,16 @@ class CimaLightProvider : MainAPI() {
 
     private fun priorityScore(url: String): Int {
         val u = url.lowercase()
-        // أقل رقم = أولوية أعلى
         return when {
-            u.contains(".m3u8") -> 0
-            u.contains(".mp4") -> 1
-            // hosts common (good hit-rate)
-            u.contains("voe") -> 2
-            u.contains("streamwish") || u.contains("wish") -> 3
-            u.contains("mixdrop") -> 4
-            u.contains("filemoon") -> 5
-            u.contains("dood") -> 6
-            u.contains("streamtape") -> 7
-            // internal players آخر شيء (غالي)
+            u.contains("slp_watch=") -> 0          // ✅ decode-first candidates at top
+            u.contains(".m3u8") -> 1
+            u.contains(".mp4") -> 2
+            u.contains("voe") -> 3
+            u.contains("streamwish") || u.contains("wish") -> 4
+            u.contains("mixdrop") -> 5
+            u.contains("filemoon") -> 6
+            u.contains("dood") -> 7
+            u.contains("streamtape") -> 8
             isInternal(url) && looksLikeInternalPlayer(url) -> 50
             else -> 20
         }
@@ -456,7 +434,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks (AGGREGATE + PRIORITY + LIMITS)
+    // LoadLinks (DECODE-FIRST + HARD TRY LIMIT)
     // ---------------------------
     override suspend fun loadLinks(
         data: String,
@@ -467,7 +445,6 @@ class CimaLightProvider : MainAPI() {
 
         var watchUrl = data.trim()
 
-        // If user gave details page, locate watch.php?vid=...
         var vid = Regex("""vid=([A-Za-z0-9]+)""").find(watchUrl)?.groupValues?.getOrNull(1)
         if (vid.isNullOrBlank()) {
             val doc = runCatching {
@@ -497,11 +474,11 @@ class CimaLightProvider : MainAPI() {
             doc.extractServersSmart().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-            // ✅ لا توسعة data-watch هنا (للسرعة) — فقط اجمعها كروابط خام
+            // collect data-watch as-is (we decode-first later)
             doc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
-                .take(12)
+                .take(16)
                 .forEach { out.add(fixUrl(it)) }
         }
 
@@ -511,22 +488,34 @@ class CimaLightProvider : MainAPI() {
             if (url.isBlank() || !url.startsWith("http")) return
             if (looksLikeBadLink(url)) return
 
+            // ✅ DECODE-FIRST
+            val decoded = maybeDecodeSlpWatchFast(url)
+            if (!decoded.isNullOrBlank() && decoded.startsWith("http")) {
+                // try decoded first (no extra request)
+                val keyDec = (decoded + "|" + referer).lowercase()
+                if (visited.add(keyDec)) {
+                    if (emitDirectMedia(decoded, referer, cb)) return
+                    if (!isInternal(decoded)) {
+                        runCatching { loadExtractor(decoded, referer, subtitleCallback, cb) }
+                        if (emittedCount >= MAX_FINAL_LINKS) return
+                    }
+                }
+            }
+
             val key = (url + "|" + referer).lowercase()
             if (!visited.add(key)) return
 
-            // direct media سريع
             if (emitDirectMedia(url, referer, cb)) return
 
-            // external: استخدم extractor مباشرة
+            // external
             if (!isInternal(url)) {
                 runCatching { loadExtractor(url, referer, subtitleCallback, cb) }
                 return
             }
 
-            // internal: resolve LIGHT وبحدود
+            // internal resolve (light + bounded)
             if (!looksLikeInternalPlayer(url)) return
             if (internalResolveCount >= MAX_INTERNAL_RESOLVES) return
-
             internalResolveCount++
 
             val expanded = resolveInternalCimaLightOnce(url, referer)
@@ -535,7 +524,6 @@ class CimaLightProvider : MainAPI() {
                 .filter { !looksLikeBadLink(it) }
                 .take(25)
 
-            // ✅ بعد التوسعة الخفيفة: جرّب direct ثم external فقط
             for (x in expanded) {
                 if (emittedCount >= MAX_FINAL_LINKS) return
                 if (emitDirectMedia(x, url, cb)) continue
@@ -547,14 +535,12 @@ class CimaLightProvider : MainAPI() {
 
         val candidates = LinkedHashSet<String>()
 
-        // 1) play.php first
         val playUrl = "$mainUrl/play.php?vid=$vid"
         runCatching {
             val playDoc = app.get(playUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
             addCandidates(playDoc, candidates)
         }
 
-        // 2) downloads.php second
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         runCatching {
             val dlDoc = app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
@@ -569,7 +555,7 @@ class CimaLightProvider : MainAPI() {
                 .forEach { candidates.add(it) }
         }
 
-        // 3) AGGREGATE STRATEGY: dedupe + priority + limit
+        // ✅ aggregate: dedupe + priority + hard try limit
         val finalList = candidates
             .asSequence()
             .distinct()
@@ -579,9 +565,11 @@ class CimaLightProvider : MainAPI() {
             .take(MAX_TOTAL_CANDIDATES)
             .toList()
 
-        // 4) process with per-candidate timeout
+        var tries = 0
         for (link in finalList) {
             if (emittedCount >= MAX_FINAL_LINKS) break
+            if (tries >= MAX_TRIES) break
+            tries++
 
             withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
                 tryOneCandidate(link, playUrl)
