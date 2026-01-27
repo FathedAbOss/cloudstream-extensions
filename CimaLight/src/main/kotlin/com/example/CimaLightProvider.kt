@@ -70,9 +70,6 @@ class CimaLightProvider : MainAPI() {
         return out.toList()
     }
 
-    /**
-     * نرجّع جمع الروابط من a[href] لكن بشكل "محدود" حتى ما يصير بطء + سكراب.
-     */
     private fun Document.extractServersSmart(): List<String> {
         val out = LinkedHashSet<String>()
 
@@ -104,28 +101,31 @@ class CimaLightProvider : MainAPI() {
             if (m != null) out.add(fixUrl(m.value))
         }
 
-        // 5) anchors (لكن فلترة ذكية ومحدودة)
+        // 5) anchors (smart)
         this.select("a[href]").forEach {
-            val href = it.attr("href").trim()
-            if (!href.startsWith("http")) return@forEach
+            val hrefRaw = it.attr("href").trim()
+            if (hrefRaw.isBlank()) return@forEach
 
+            val href = fixUrl(hrefRaw)
             val h = href.lowercase()
+
             val looksUseful =
                 h.contains(".m3u8") ||
-                        h.contains(".mp4") ||
-                        h.contains("multiup") ||
-                        h.contains("embed") ||
-                        h.contains("player") ||
-                        h.contains("stream") ||
-                        h.contains("ok.ru") ||
-                        h.contains("uqload") ||
-                        h.contains("vidoza") ||
-                        h.contains("filemoon") ||
-                        h.contains("dood") ||
-                        h.contains("mixdrop") ||
-                        h.contains("streamtape")
+                h.contains(".mp4") ||
+                h.contains("multiup") ||
+                h.contains("embed") ||
+                h.contains("player") ||
+                h.contains("stream") ||
+                h.contains("ok.ru") ||
+                h.contains("uqload") ||
+                h.contains("vidoza") ||
+                h.contains("filemoon") ||
+                h.contains("dood") ||
+                h.contains("mixdrop") ||
+                h.contains("streamtape") ||
+                h.contains("cimalight") // ✅ مهم: روابط داخلية للسيرفرات
 
-            if (looksUseful) out.add(fixUrl(href))
+            if (looksUseful) out.add(href)
         }
 
         return out.toList()
@@ -175,7 +175,6 @@ class CimaLightProvider : MainAPI() {
 
     private fun needsOneStepFollow(url: String): Boolean {
         val u = url.lowercase()
-        // فقط الهوبات اللي شفناها عندك
         return u.contains("elif.news") || u.contains("alhakekanet.net")
     }
 
@@ -235,13 +234,50 @@ class CimaLightProvider : MainAPI() {
         return out.toList()
     }
 
+    // ---------------------------
+    // ✅ NEW: Resolve internal CimaLight pages one step
+    // ---------------------------
+    private suspend fun resolveInternalCimaIfNeeded(url: String, referer: String): List<String> {
+        val fixed = url.trim()
+        if (fixed.isBlank() || !fixed.startsWith("http")) return emptyList()
+
+        val isInternal = fixed.contains("cimalight", ignoreCase = true) || fixed.startsWith(mainUrl)
+        if (!isInternal) return listOf(fixed)
+
+        // only resolve likely player/watch pages
+        val u = fixed.lowercase()
+        val looksPlayer = u.contains("player") || u.contains("embed") || u.contains("play") || u.contains("watch")
+        if (!looksPlayer) return listOf(fixed)
+
+        val out = LinkedHashSet<String>()
+        out.add(fixed)
+
+        runCatching {
+            val (finalUrl, doc) = getDocFollowRedirectOnce(fixed, referer) ?: return@runCatching
+            out.add(finalUrl)
+
+            doc.extractServersSmart().forEach { out.add(it) }
+            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+
+            // expand any data-watch inside internal page too
+            doc.select("[data-watch]")
+                .mapNotNull { it.attr("data-watch")?.trim() }
+                .filter { it.isNotBlank() }
+                .take(25)
+                .forEach { dw ->
+                    runCatching { expandDataWatchLink(dw, finalUrl).forEach { out.add(it) } }
+                }
+        }
+
+        return out.toList()
+    }
+
     private fun hostLabel(url: String): String {
         return runCatching { URI(url).host ?: "direct" }.getOrNull() ?: "direct"
     }
 
     private fun looksLikeBadLink(url: String): Boolean {
         val u = url.lowercase()
-        // فلترة خفيفة جدًا (ما عاد نستخدم "short" لأنها كانت تقطع روابط صحيحة)
         return u.contains("trailer") || u.contains("preview") || u.contains("promo") || u.contains("sample") || u.contains("ads")
     }
 
@@ -308,7 +344,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Search (fixed)
+    // Search
     // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
@@ -349,7 +385,6 @@ class CimaLightProvider : MainAPI() {
             ?.let { fixUrlNull(it) }
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // مسلسل فقط إذا "الحلقة" فعلاً
         val episodeAnchors = document.select("a[href*=watch.php?vid=]")
         val episodeLinks = episodeAnchors.mapNotNull { a ->
             val text = a.text().trim()
@@ -410,8 +445,6 @@ class CimaLightProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        // ✅ FIX: sometimes "data" is NOT watch.php?vid=...
-        // If no vid= found, fetch page once and extract watch.php?vid= as real watchUrl.
         var watchUrl = data.trim()
 
         var vid = Regex("""vid=([A-Za-z0-9]+)""")
@@ -452,6 +485,19 @@ class CimaLightProvider : MainAPI() {
             if (url.isBlank() || !url.startsWith("http")) return
             if (looksLikeBadLink(url)) return
 
+            // ✅ NEW: internal resolve first (this brings MORE servers)
+            val expanded = resolveInternalCimaIfNeeded(url, referer)
+            if (expanded.size > 1 || (expanded.isNotEmpty() && expanded[0] != url)) {
+                expanded.distinct().take(120).forEach { x ->
+                    if (looksLikeBadLink(x)) return@forEach
+                    if (emitDirectMedia(x, referer, cb)) return@forEach
+                    if (x.startsWith("http") && !x.lowercase().contains("cimalight")) {
+                        runCatching { loadExtractor(x, referer, subtitleCallback, cb) }
+                    }
+                }
+                return
+            }
+
             if (emitDirectMedia(url, referer, cb)) return
 
             val lower = url.lowercase()
@@ -462,7 +508,6 @@ class CimaLightProvider : MainAPI() {
                 doc.extractServersSmart().forEach { inner.add(it) }
                 doc.extractDirectMediaFromScripts().forEach { inner.add(it) }
 
-                // توسعة data-watch داخل صفحة الهوب
                 doc.select("[data-watch]")
                     .mapNotNull { it.attr("data-watch")?.trim() }
                     .filter { it.isNotBlank() }
@@ -481,7 +526,6 @@ class CimaLightProvider : MainAPI() {
                 return
             }
 
-            // MultiUp mirrors
             if (lower.contains("multiup.io")) {
                 runCatching {
                     val doc = app.get(url, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
@@ -504,7 +548,6 @@ class CimaLightProvider : MainAPI() {
                 return
             }
 
-            // default extractor
             runCatching { loadExtractor(url, referer, subtitleCallback, cb) }
         }
 
@@ -543,7 +586,6 @@ class CimaLightProvider : MainAPI() {
             downloadsDoc.extractServersSmart().forEach { dlCandidates.add(it) }
             downloadsDoc.extractDirectMediaFromScripts().forEach { dlCandidates.add(it) }
 
-            // هنا مهم جدًا: كثير مرات روابط السيرفرات تكون فقط في a[href]
             downloadsDoc.select("a[href]")
                 .mapNotNull { fixUrlNull(it.attr("href").trim()) }
                 .filter { it.startsWith("http") }
