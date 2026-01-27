@@ -71,10 +71,9 @@ class CimaLightProvider : MainAPI() {
     }
 
     /**
-     * VIKTIGT: Ingen "a[href]" scanning här.
-     * Den gav massor av skräplänkar + gjorde allt extremt långsamt.
+     * نرجّع جمع الروابط من a[href] لكن بشكل "محدود" حتى ما يصير بطء + سكراب.
      */
-    private fun Document.extractServersFast(): List<String> {
+    private fun Document.extractServersSmart(): List<String> {
         val out = LinkedHashSet<String>()
 
         // 1) data-watch
@@ -83,7 +82,7 @@ class CimaLightProvider : MainAPI() {
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // 2) vanliga data-* embeds
+        // 2) data-* embeds
         val attrs = listOf("data-embed-url", "data-url", "data-href", "data-embed", "data-src", "data-link")
         for (a in attrs) {
             this.select("[$a]").forEach {
@@ -98,21 +97,44 @@ class CimaLightProvider : MainAPI() {
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // 4) onclick urls
+        // 4) onclick URLs
         this.select("[onclick]").forEach {
             val oc = it.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
             if (m != null) out.add(fixUrl(m.value))
         }
 
+        // 5) anchors (لكن فلترة ذكية ومحدودة)
+        this.select("a[href]").forEach {
+            val href = it.attr("href").trim()
+            if (!href.startsWith("http")) return@forEach
+
+            val h = href.lowercase()
+            val looksUseful =
+                h.contains(".m3u8") ||
+                h.contains(".mp4") ||
+                h.contains("multiup") ||
+                h.contains("embed") ||
+                h.contains("player") ||
+                h.contains("stream") ||
+                h.contains("ok.ru") ||
+                h.contains("uqload") ||
+                h.contains("vidoza") ||
+                h.contains("filemoon") ||
+                h.contains("dood") ||
+                h.contains("mixdrop") ||
+                h.contains("streamtape")
+
+            if (looksUseful) out.add(fixUrl(href))
+        }
+
         return out.toList()
     }
 
     // ---------------------------
-    // JS/meta redirect helpers (Cloudstream kör ej JS)
+    // JS/meta redirect helpers
     // ---------------------------
     private fun Document.extractJsOrMetaRedirect(): String? {
-        // meta refresh
         this.selectFirst("meta[http-equiv~=(?i)refresh]")?.attr("content")?.let { c ->
             val u = c.substringAfter("url=", "").trim()
             if (u.startsWith("http")) return u
@@ -120,17 +142,14 @@ class CimaLightProvider : MainAPI() {
 
         val html = this.html()
 
-        // redirectUrl='https://...'
         Regex("""redirectUrl\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
 
-        // location.replace("https://...")
         Regex("""location\.replace\(\s*['"]([^'"]+)['"]\s*\)""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
 
-        // window.location = "https://..."
         Regex("""window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
@@ -152,6 +171,12 @@ class CimaLightProvider : MainAPI() {
         }
 
         return url to doc
+    }
+
+    private fun needsOneStepFollow(url: String): Boolean {
+        val u = url.lowercase()
+        // فقط الهوبات اللي شفناها عندك
+        return u.contains("elif.news") || u.contains("alhakekanet.net")
     }
 
     // ---------------------------
@@ -203,7 +228,7 @@ class CimaLightProvider : MainAPI() {
         runCatching {
             val (finalUrl, doc) = getDocFollowRedirectOnce(target, referer) ?: return@runCatching
             out.add(finalUrl)
-            doc.extractServersFast().forEach { out.add(it) }
+            doc.extractServersSmart().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
         }
 
@@ -214,15 +239,10 @@ class CimaLightProvider : MainAPI() {
         return runCatching { URI(url).host ?: "direct" }.getOrNull() ?: "direct"
     }
 
-    private fun looksLikeBadShortVideo(url: String): Boolean {
+    private fun looksLikeBadLink(url: String): Boolean {
         val u = url.lowercase()
-        return u.contains("trailer") ||
-                u.contains("preview") ||
-                u.contains("promo") ||
-                u.contains("sample") ||
-                u.contains("ads") ||
-                u.contains("advert") ||
-                u.contains("short")
+        // فلترة خفيفة جدًا (ما عاد نستخدم "short" لأنها كانت تقطع روابط صحيحة)
+        return u.contains("trailer") || u.contains("preview") || u.contains("promo") || u.contains("sample") || u.contains("ads")
     }
 
     private suspend fun emitDirectMedia(
@@ -232,7 +252,7 @@ class CimaLightProvider : MainAPI() {
     ): Boolean {
         val clean = url.trim()
         if (clean.isBlank() || !clean.startsWith("http")) return false
-        if (looksLikeBadShortVideo(clean)) return false
+        if (looksLikeBadLink(clean)) return false
 
         val l = clean.lowercase()
         val isM3u8 = l.contains(".m3u8")
@@ -261,7 +281,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Main / Search
+    // Main page
     // ---------------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val document = app.get(request.data, headers = safeHeaders).document
@@ -287,6 +307,9 @@ class CimaLightProvider : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
+    // ---------------------------
+    // Search (fixed)
+    // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = URLEncoder.encode(query.trim(), "UTF-8")
         val url = "$mainUrl/search.php?keywords=$q&video-id="
@@ -326,7 +349,7 @@ class CimaLightProvider : MainAPI() {
             ?.let { fixUrlNull(it) }
         val plot = document.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // Bara om det faktiskt är "الحلقة"
+        // مسلسل فقط إذا "الحلقة" فعلاً
         val episodeAnchors = document.select("a[href*=watch.php?vid=]")
         val episodeLinks = episodeAnchors.mapNotNull { a ->
             val text = a.text().trim()
@@ -378,7 +401,7 @@ class CimaLightProvider : MainAPI() {
     }
 
     // ---------------------------
-    // LoadLinks (snabbare + mindre skräp)
+    // LoadLinks
     // ---------------------------
     override suspend fun loadLinks(
         data: String,
@@ -388,57 +411,46 @@ class CimaLightProvider : MainAPI() {
     ): Boolean {
 
         val watchUrl = data.trim()
+
         val vid = Regex("""vid=([A-Za-z0-9]+)""")
             .find(watchUrl)
             ?.groupValues
             ?.getOrNull(1)
             ?: return false
 
-        var emittedCount = 0
         var emittedAny = false
-
         val cb: (ExtractorLink) -> Unit = {
             emittedAny = true
-            emittedCount += 1
             callback(it)
         }
 
-        suspend fun processCandidate(url: String, referer: String) {
-            if (emittedCount >= 2) return // ✅ returnera snabbt (2 servrar räcker som start)
-            val u = url.trim()
-            if (u.isBlank() || !u.startsWith("http")) return
-            if (looksLikeBadShortVideo(u)) return
+        suspend fun handleUrl(u: String, referer: String) {
+            val url = u.trim()
+            if (url.isBlank() || !url.startsWith("http")) return
+            if (looksLikeBadLink(url)) return
 
-            // Direkt mp4/m3u8 först
-            if (emitDirectMedia(u, referer, cb)) return
-            if (emittedCount >= 2) return
+            if (emitDirectMedia(url, referer, cb)) return
 
-            val lower = u.lowercase()
+            val lower = url.lowercase()
 
-            // Följ bara redirect-hubs, inte varenda cimalight-länk
-            val needsFollow = lower.contains("elif.news") || lower.contains("alhakekanet.net")
-
-            if (needsFollow) {
-                val (finalUrl, doc) = getDocFollowRedirectOnce(u, referer) ?: return
+            if (needsOneStepFollow(url)) {
+                val (finalUrl, doc) = getDocFollowRedirectOnce(url, referer) ?: return
                 val inner = LinkedHashSet<String>()
-
-                doc.extractServersFast().forEach { inner.add(it) }
+                doc.extractServersSmart().forEach { inner.add(it) }
                 doc.extractDirectMediaFromScripts().forEach { inner.add(it) }
 
-                val dw = doc.select("[data-watch]")
+                // توسعة data-watch داخل صفحة الهوب
+                doc.select("[data-watch]")
                     .mapNotNull { it.attr("data-watch")?.trim() }
                     .filter { it.isNotBlank() }
-                    .take(15)
+                    .take(25)
+                    .forEach { link ->
+                        runCatching { expandDataWatchLink(link, finalUrl).forEach { inner.add(it) } }
+                    }
 
-                dw.forEach { link ->
-                    runCatching { expandDataWatchLink(link, finalUrl).forEach { inner.add(it) } }
-                }
-
-                inner.toList().distinct().take(60).forEach { x ->
-                    if (emittedCount >= 2) return
-                    if (looksLikeBadShortVideo(x)) return@forEach
+                inner.toList().distinct().take(120).forEach { x ->
+                    if (looksLikeBadLink(x)) return@forEach
                     if (emitDirectMedia(x, finalUrl, cb)) return@forEach
-                    if (emittedCount >= 2) return@forEach
                     if (x.startsWith("http") && !x.lowercase().contains("cimalight")) {
                         runCatching { loadExtractor(x, finalUrl, subtitleCallback, cb) }
                     }
@@ -449,20 +461,19 @@ class CimaLightProvider : MainAPI() {
             // MultiUp mirrors
             if (lower.contains("multiup.io")) {
                 runCatching {
-                    val doc = app.get(u, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
+                    val doc = app.get(url, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
                     val mirrors = doc.select("a[href]")
                         .mapNotNull { fixUrlNull(it.attr("href").trim()) }
                         .filter { it.startsWith("http") }
                         .filter { !it.contains("multiup.io", ignoreCase = true) }
                         .distinct()
-                        .take(15)
+                        .take(25)
 
                     mirrors.forEach { m ->
-                        if (emittedCount >= 2) return@forEach
-                        if (looksLikeBadShortVideo(m)) return@forEach
+                        if (looksLikeBadLink(m)) return@forEach
                         runCatching {
-                            if (!emitDirectMedia(m, u, cb)) {
-                                loadExtractor(m, u, subtitleCallback, cb)
+                            if (!emitDirectMedia(m, url, cb)) {
+                                loadExtractor(m, url, subtitleCallback, cb)
                             }
                         }
                     }
@@ -470,11 +481,11 @@ class CimaLightProvider : MainAPI() {
                 return
             }
 
-            // Vanlig extractor
-            runCatching { loadExtractor(u, referer, subtitleCallback, cb) }
+            // default extractor
+            runCatching { loadExtractor(url, referer, subtitleCallback, cb) }
         }
 
-        // 1) play.php (snabbast)
+        // -------- play.php --------
         val playUrl = "$mainUrl/play.php?vid=$vid"
         val playDoc = runCatching {
             app.get(playUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
@@ -482,28 +493,23 @@ class CimaLightProvider : MainAPI() {
 
         val playCandidates = LinkedHashSet<String>()
         if (playDoc != null) {
-            playDoc.extractServersFast().forEach { playCandidates.add(it) }
+            playDoc.extractServersSmart().forEach { playCandidates.add(it) }
             playDoc.extractDirectMediaFromScripts().forEach { playCandidates.add(it) }
 
-            val dw = playDoc.select("[data-watch]")
+            playDoc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
-                .take(15)
-
-            dw.forEach { link ->
-                runCatching { expandDataWatchLink(link, playUrl).forEach { playCandidates.add(it) } }
-            }
+                .take(25)
+                .forEach { link ->
+                    runCatching { expandDataWatchLink(link, playUrl).forEach { playCandidates.add(it) } }
+                }
         }
 
-        playCandidates.toList().distinct().take(80).forEach { link ->
-            if (emittedCount >= 2) return@forEach
-            processCandidate(link, playUrl)
+        playCandidates.toList().distinct().take(150).forEach { link ->
+            handleUrl(link, playUrl)
         }
 
-        // ✅ Om vi redan har länkar, returnera snabbt för att slippa lång loading
-        if (emittedAny) return true
-
-        // 2) downloads.php (fallback)
+        // -------- downloads.php --------
         val downloadsUrl = "$mainUrl/downloads.php?vid=$vid"
         val downloadsDoc = runCatching {
             app.get(downloadsUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
@@ -511,22 +517,29 @@ class CimaLightProvider : MainAPI() {
 
         val dlCandidates = LinkedHashSet<String>()
         if (downloadsDoc != null) {
-            downloadsDoc.extractServersFast().forEach { dlCandidates.add(it) }
+            downloadsDoc.extractServersSmart().forEach { dlCandidates.add(it) }
             downloadsDoc.extractDirectMediaFromScripts().forEach { dlCandidates.add(it) }
 
-            val dw2 = downloadsDoc.select("[data-watch]")
+            // هنا مهم جدًا: كثير مرات روابط السيرفرات تكون فقط في a[href]
+            downloadsDoc.select("a[href]")
+                .mapNotNull { fixUrlNull(it.attr("href").trim()) }
+                .filter { it.startsWith("http") }
+                .filter { !it.contains(mainUrl, ignoreCase = true) }
+                .distinct()
+                .take(60)
+                .forEach { dlCandidates.add(it) }
+
+            downloadsDoc.select("[data-watch]")
                 .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
-                .take(15)
-
-            dw2.forEach { link ->
-                runCatching { expandDataWatchLink(link, downloadsUrl).forEach { dlCandidates.add(it) } }
-            }
+                .take(25)
+                .forEach { link ->
+                    runCatching { expandDataWatchLink(link, downloadsUrl).forEach { dlCandidates.add(it) } }
+                }
         }
 
-        dlCandidates.toList().distinct().take(120).forEach { link ->
-            if (emittedCount >= 2) return@forEach
-            processCandidate(link, downloadsUrl)
+        dlCandidates.toList().distinct().take(200).forEach { link ->
+            handleUrl(link, downloadsUrl)
         }
 
         return emittedAny
