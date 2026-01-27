@@ -337,19 +337,24 @@ class CimaLightProvider : MainAPI() {
 
         if (episodeAnchors.size >= 2) {
             // Treat as series page
-            val episodes = episodeAnchors.mapNotNull { a ->
-                val eUrl = fixUrl(a.attr("href").trim())
-                if (eUrl.isBlank()) return@mapNotNull null
+val episodes = episodeAnchors.mapNotNull { a ->
+    val eUrl = fixUrl(a.attr("href").trim())
+    if (eUrl.isBlank()) return@mapNotNull null
 
-                val t = a.text().trim()
-                val epNum = Regex("""الحلقة\s+(\d+)""").find(t)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                Episode(
-                    data = eUrl,
-                    name = t.ifBlank { "Episode" },
-                    season = 1,
-                    episode = epNum
-                )
-            }.distinctBy { it.data }
+    val t = a.text().trim()
+    val epNum = Regex("""الحلقة\s+(\d+)""")
+        .find(t)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+
+    newEpisode(
+        data = eUrl,
+        name = t.ifBlank { "Episode" },
+        season = 1,
+        episode = epNum
+    )
+}.distinctBy { it.data }
 
             return newTvSeriesLoadResponse(
                 name = title.ifBlank { "CimaLight" },
