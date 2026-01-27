@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.util.Base64
 
 class CimaLightProvider : MainAPI() {
@@ -107,6 +108,71 @@ class CimaLightProvider : MainAPI() {
         return out.toList()
     }
 
+    // ---------------------------
+    // Redirect helpers (JS/meta redirect)
+    // ---------------------------
+
+    private fun Document.extractJsOrMetaRedirect(): String? {
+        // 1) <meta http-equiv="refresh" content="0;url=https://...">
+        this.selectFirst("meta[http-equiv~=(?i)refresh]")?.attr("content")?.let { c ->
+            val u = c.substringAfter("url=", "").trim()
+            if (u.startsWith("http")) return u
+        }
+
+        val html = this.html()
+
+        // 2) redirectUrl='https://...';
+        Regex("""redirectUrl\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+            .find(html)?.groupValues?.getOrNull(1)?.trim()
+            ?.let { if (it.startsWith("http")) return it }
+
+        // 3) location.replace("https://...")
+        Regex("""location\.replace\(\s*['"]([^'"]+)['"]\s*\)""", RegexOption.IGNORE_CASE)
+            .find(html)?.groupValues?.getOrNull(1)?.trim()
+            ?.let { if (it.startsWith("http")) return it }
+
+        // 4) window.location = "https://..."
+        Regex("""window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
+            .find(html)?.groupValues?.getOrNull(1)?.trim()
+            ?.let { if (it.startsWith("http")) return it }
+
+        // 5) Fallback: take the first http(s) URL inside scripts (rare but useful)
+        Regex("""https?://[^"'<> ]+""", RegexOption.IGNORE_CASE)
+            .find(html)?.value?.trim()
+            ?.let { if (it.startsWith("http")) return it }
+
+        return null
+    }
+
+    private suspend fun getDocFollowRedirectOnce(url: String, referer: String): Pair<String, Document>? {
+        val first = runCatching {
+            app.get(url, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
+        }.getOrNull() ?: return null
+
+        val redirect = first.extractJsOrMetaRedirect()
+        if (!redirect.isNullOrBlank() && redirect.startsWith("http")) {
+            val second = runCatching {
+                app.get(redirect, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to url)).document
+            }.getOrNull()
+            if (second != null) return redirect to second
+        }
+
+        return url to first
+    }
+
+    private fun shouldOneStepFollow(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("cimalight") || u.contains("elif.news") || u.contains("alhakekanet.net")
+    }
+
+    private fun hostLabel(url: String): String {
+        return runCatching { URI(url).host ?: "direct" }.getOrNull() ?: "direct"
+    }
+
+    // ---------------------------
+    // WeCima gateway helpers
+    // ---------------------------
+
     private fun extractSlpWatchParam(url: String): String? {
         val u = url.trim()
         if (!u.contains("slp_watch=")) return null
@@ -148,64 +214,81 @@ class CimaLightProvider : MainAPI() {
         val slp = extractSlpWatchParam(fixed)
         val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
 
-        // If we can decode -> fetch decoded url and extract
-        if (!decodedUrl.isNullOrBlank()) {
-            out.add(decodedUrl)
-            runCatching {
-                val doc = app.get(
-                    decodedUrl,
-                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
-                ).document
-                doc.extractServersFast().forEach { out.add(it) }
-                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            }
-        } else {
-            // else: keep gateway and also try fetching it (sometimes returns iframe)
-            out.add(fixed)
-            runCatching {
-                val doc = app.get(
-                    fixed,
-                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
-                ).document
-                doc.extractServersFast().forEach { out.add(it) }
-                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            }
+        val target = decodedUrl ?: fixed
+        out.add(target)
+
+        // fetch (and follow possible JS/meta redirect once)
+        runCatching {
+            val (finalUrl, doc) = getDocFollowRedirectOnce(target, referer) ?: return@runCatching
+            out.add(finalUrl)
+            doc.extractServersFast().forEach { out.add(it) }
+            doc.extractDirectMediaFromScripts().forEach { out.add(it) }
         }
 
         return out.toList()
     }
 
-    // ✅ FIXED: Emit direct mp4/m3u8 by creating an ExtractorLink and invoking callback
-// Emit direct mp4/m3u8 using newExtractorLink
-private suspend fun emitDirectMedia(
-    url: String,
-    referer: String,
-    callback: (ExtractorLink) -> Unit
-): Boolean {
-    val l = url.lowercase()
-    val isM3u8 = l.contains(".m3u8")
-    val isMp4 = l.contains(".mp4")
-    if (!isM3u8 && !isMp4) return false
+    // ---------------------------
+    // One-step "server page" scraper
+    // ---------------------------
 
-    val type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+    private suspend fun scrapeOneStepServers(url: String, referer: String): List<String> {
+        val out = LinkedHashSet<String>()
+        val fixed = fixUrl(url).trim()
+        if (fixed.isBlank()) return emptyList()
 
-    val link = newExtractorLink(
-        source = name,
-        name = "CimaLight Direct",
-        url = url,
-        type = type
-    ) {
-        this.referer = referer
-        this.quality = Qualities.Unknown.value
-        this.headers = mapOf(
-            "User-Agent" to USER_AGENT,
-            "Referer" to referer
-        )
+        val pair = getDocFollowRedirectOnce(fixed, referer) ?: return emptyList()
+        val finalUrl = pair.first
+        val doc = pair.second
+
+        out.add(finalUrl)
+        doc.extractServersFast().forEach { out.add(it) }
+        doc.extractDirectMediaFromScripts().forEach { out.add(it) }
+
+        // Also expand any data-watch found inside this "server page"
+        val dw = doc.select("[data-watch]")
+            .mapNotNull { it.attr("data-watch")?.trim() }
+            .filter { it.isNotBlank() }
+            .take(25)
+
+        dw.forEach { dwUrl ->
+            runCatching { expandDataWatchLink(dwUrl, finalUrl).forEach { out.add(it) } }
+        }
+
+        return out.toList()
     }
 
-    callback.invoke(link)
-    return true
-}
+    // Emit direct mp4/m3u8 using newExtractorLink
+    private suspend fun emitDirectMedia(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        val l = url.lowercase()
+        val isM3u8 = l.contains(".m3u8")
+        val isMp4 = l.contains(".mp4")
+        if (!isM3u8 && !isMp4) return false
+
+        val type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        val host = hostLabel(url)
+
+        val link = newExtractorLink(
+            source = name,
+            name = "Direct ($host)",
+            url = url,
+            type = type
+        ) {
+            this.referer = referer
+            this.quality = Qualities.Unknown.value
+            this.headers = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to referer
+            )
+        }
+
+        callback.invoke(link)
+        return true
+    }
 
     // ---------------------------
     // Main / Search
@@ -293,7 +376,6 @@ private suspend fun emitDirectMedia(
             ?.getOrNull(1)
             ?: return false
 
-        val collected = LinkedHashSet<String>()
         var foundAny = false
 
         // ✅ STEP 1: Try streaming servers from play.php first
@@ -303,8 +385,9 @@ private suspend fun emitDirectMedia(
             app.get(playUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to watchUrl)).document
         }.getOrNull()
 
+        val collected = LinkedHashSet<String>()
+
         if (playDoc != null) {
-            // collect obvious candidates
             playDoc.extractServersFast().forEach { collected.add(it) }
             playDoc.extractDirectMediaFromScripts().forEach { collected.add(it) }
 
@@ -320,15 +403,31 @@ private suspend fun emitDirectMedia(
         }
 
         // Emit what we got from play.php
-        collected.toList().distinct().forEach { link ->
+        collected.toList().distinct().take(120).forEach { link ->
             // direct media
             if (emitDirectMedia(link, playUrl, callback)) {
                 foundAny = true
                 return@forEach
             }
 
+            if (!link.startsWith("http")) return@forEach
+
+            // ✅ NEW: follow internal/gateway pages one step (cimalight/elif/alhakekanet)
+            if (shouldOneStepFollow(link)) {
+                val inner = runCatching { scrapeOneStepServers(link, playUrl) }.getOrNull().orEmpty()
+                inner.distinct().take(80).forEach { innerUrl ->
+                    if (emitDirectMedia(innerUrl, link, callback)) {
+                        foundAny = true
+                    } else if (innerUrl.startsWith("http") && !innerUrl.contains("cimalight", ignoreCase = true)) {
+                        runCatching { loadExtractor(innerUrl, link, subtitleCallback, callback) }
+                        foundAny = true
+                    }
+                }
+                return@forEach
+            }
+
             // external extractor
-            if (link.startsWith("http") && !link.contains("cimalight", ignoreCase = true)) {
+            if (!link.contains("cimalight", ignoreCase = true)) {
                 runCatching { loadExtractor(link, playUrl, subtitleCallback, callback) }
                 foundAny = true
             }
@@ -358,14 +457,27 @@ private suspend fun emitDirectMedia(
         }
 
         // Expand MultiUp mirrors + emit
-        dlCollected.toList().distinct().take(80).forEach { link ->
+        dlCollected.toList().distinct().take(140).forEach { link ->
             if (emitDirectMedia(link, downloadsUrl, callback)) {
                 foundAny = true
                 return@forEach
             }
 
             if (!link.startsWith("http")) return@forEach
-            if (link.contains("cimalight", ignoreCase = true)) return@forEach
+
+            // ✅ NEW: follow internal/gateway pages one step (cimalight/elif/alhakekanet)
+            if (shouldOneStepFollow(link)) {
+                val inner = runCatching { scrapeOneStepServers(link, downloadsUrl) }.getOrNull().orEmpty()
+                inner.distinct().take(80).forEach { innerUrl ->
+                    if (emitDirectMedia(innerUrl, link, callback)) {
+                        foundAny = true
+                    } else if (innerUrl.startsWith("http") && !innerUrl.contains("cimalight", ignoreCase = true)) {
+                        runCatching { loadExtractor(innerUrl, link, subtitleCallback, callback) }
+                        foundAny = true
+                    }
+                }
+                return@forEach
+            }
 
             runCatching {
                 if (link.contains("multiup.io", ignoreCase = true)) {
@@ -387,8 +499,10 @@ private suspend fun emitDirectMedia(
                     }
                     if (mirrors.isNotEmpty()) foundAny = true
                 } else {
-                    loadExtractor(link, downloadsUrl, subtitleCallback, callback)
-                    foundAny = true
+                    if (!link.contains("cimalight", ignoreCase = true)) {
+                        loadExtractor(link, downloadsUrl, subtitleCallback, callback)
+                        foundAny = true
+                    }
                 }
             }
         }
