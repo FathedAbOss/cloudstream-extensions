@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.LinkedHashMap
-import java.util.Base64
 import kotlin.math.min
 
 class WeCimaProvider : MainAPI() {
@@ -26,12 +25,13 @@ class WeCimaProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // ✅ Hotlink protection for images
-    private val posterHeaders = mapOf(
+    /**
+     * ✅ FIX: posters disappeared => usually "Origin/Accept" causes hotlink issues.
+     * Keep it minimal: UA + Referer only.
+     */
+    private val posterHeadersSafe = mapOf(
         "User-Agent" to USER_AGENT,
-        "Referer" to "$mainUrl/",
-        "Origin" to mainUrl,
-        "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+        "Referer" to "$mainUrl/"
     )
 
     // ✅ poster cache to reduce slowdown
@@ -93,18 +93,31 @@ class WeCimaProvider : MainAPI() {
             "data-img",
             "data-bg",
             "data-background",
-            "data-background-image"
+            "data-background-image",
+            "srcset"
         )
 
         if (img != null) {
             for (a in lazyAttrs) {
-                cleanUrl(img.attr(a))?.let { return it }
+                val v = img.attr(a)
+                if (a == "srcset" && v.isNotBlank()) {
+                    val first = v.split(" ").firstOrNull { it.startsWith("http") || it.startsWith("/") }?.trim()
+                    cleanUrl(first)?.let { return it }
+                } else {
+                    cleanUrl(v)?.let { return it }
+                }
             }
         }
 
         val holder = this.selectFirst("[data-src], [data-image], [data-bg], [data-background-image]") ?: this
         for (a in lazyAttrs) {
-            cleanUrl(holder.attr(a))?.let { return it }
+            val v = holder.attr(a)
+            if (a == "srcset" && v.isNotBlank()) {
+                val first = v.split(" ").firstOrNull { it.startsWith("http") || it.startsWith("/") }?.trim()
+                cleanUrl(first)?.let { return it }
+            } else {
+                cleanUrl(v)?.let { return it }
+            }
         }
 
         val bgEl = this.selectFirst("[style*=background-image]") ?: this
@@ -136,18 +149,14 @@ class WeCimaProvider : MainAPI() {
         return TvType.Movie
     }
 
-    // ✅ OG fallback poster (but limited + cached)
+    // ✅ OG fallback poster (cached + limited use)
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
         if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
 
         val result = try {
             val d = app.get(detailsUrl, headers = safeHeaders).document
             val og = d.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
-            if (!og.isNullOrBlank()) fixUrl(og)
-            else {
-                val anyImg = d.selectFirst("img[src]")?.attr("src")?.trim()
-                if (!anyImg.isNullOrBlank()) fixUrl(anyImg) else null
-            }
+            if (!og.isNullOrBlank()) fixUrl(og) else null
         } catch (_: Throwable) {
             null
         }
@@ -181,7 +190,7 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // IMPORTANT: WeCima uses data-watch heavily
+        // data-watch
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
@@ -209,105 +218,18 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ Base64(urlsafe) decode for slp_watch
-    private fun decodeSlpWatchUrl(encoded: String): String? {
-        val raw = encoded.trim()
-        if (raw.isBlank()) return null
-
-        // urlsafe base64 can be without padding
-        val normalized = raw
-            .replace('-', '+')
-            .replace('_', '/')
-            .let { s ->
-                val mod = s.length % 4
-                if (mod == 0) s else s + "=".repeat(4 - mod)
-            }
-
-        return try {
-            val bytes = Base64.getDecoder().decode(normalized)
-            val decoded = String(bytes, Charsets.UTF_8).trim()
-            if (decoded.startsWith("http")) decoded else null
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    // ✅ pull slp_watch=... from a URL (akhbarworld.online?...slp_watch=BASE64)
-    private fun extractSlpWatchParam(url: String): String? {
-        val u = url.trim()
-        if (!u.contains("slp_watch=")) return null
-        return try {
-            val q = u.substringAfter("slp_watch=", "")
-            if (q.isBlank()) null else q.substringBefore("&").trim()
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    // ✅ Follow data-watch -> decode slp_watch -> fetch decoded page -> extract iframe/mp4/m3u8/servers
-    private suspend fun expandDataWatchLink(dataWatchUrl: String, referer: String): List<String> {
-        val out = LinkedHashSet<String>()
-
-        val fixed = fixUrl(dataWatchUrl).trim()
-        if (fixed.isBlank()) return emptyList()
-
-        // 1) If it contains slp_watch param, decode it
-        val slp = extractSlpWatchParam(fixed)
-        val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
-
-        if (!decodedUrl.isNullOrBlank()) {
-            out.add(decodedUrl)
-
-            // 2) fetch decoded url and extract servers from that page
-            try {
-                val doc = app.get(
-                    decodedUrl,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer
-                    )
-                ).document
-
-                doc.extractServersFast().forEach { out.add(it) }
-                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            } catch (_: Throwable) {
-                // ignore
-            }
-        } else {
-            // If not decodable, still keep original (some gateways redirect)
-            out.add(fixed)
-
-            // try fetching the gateway itself (sometimes returns iframe)
-            try {
-                val doc = app.get(
-                    fixed,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer
-                    )
-                ).document
-
-                doc.extractServersFast().forEach { out.add(it) }
-                doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            } catch (_: Throwable) {
-                // ignore
-            }
-        }
-
-        return out.toList()
-    }
-
-    // ✅ Resolve internal watch/player pages one step deeper (kept)
+    // ✅ Resolve internal watch/player pages one step deeper (LIMITED)
     private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
         val fixed = fixUrl(link).trim()
         if (fixed.isBlank()) return emptyList()
 
-        val isInternal = fixed.contains("wecima") || fixed.startsWith(mainUrl)
+        val isInternal = fixed.startsWith(mainUrl) || fixed.contains("wecima", ignoreCase = true)
         if (!isInternal) return listOf(fixed)
 
-        if (!(fixed.contains("watch") || fixed.contains("player") || fixed.contains("play") || fixed.contains("مشاهدة"))) {
-            return listOf(fixed)
-        }
+        // Only follow if it looks like a player/watch page
+        val l = fixed.lowercase()
+        val shouldFollow = l.contains("watch") || l.contains("player") || l.contains("play") || l.contains("مشاهدة")
+        if (!shouldFollow) return listOf(fixed)
 
         return try {
             val doc = app.get(
@@ -350,7 +272,6 @@ class WeCimaProvider : MainAPI() {
 
             val epNum =
                 Regex("""الحلقة\s*(\d{1,4})""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                    ?: Regex("""[-/](\d{1,4})(?:/)?$""").find(link)?.groupValues?.getOrNull(1)?.toIntOrNull()
                     ?: Regex("""(\d{1,4})""").findAll(rawName).mapNotNull { it.value.toIntOrNull() }.lastOrNull()
 
             val ep = newEpisode(link) {
@@ -387,7 +308,7 @@ class WeCimaProvider : MainAPI() {
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
         )
 
-        val ogLimit = 20
+        val ogLimit = 12
         var ogCount = 0
 
         val items = elements.mapNotNull { element ->
@@ -398,7 +319,6 @@ class WeCimaProvider : MainAPI() {
             val type = guessTypeFrom(link, title)
 
             var poster = element.extractPosterFromCard()
-
             if (looksPlaceholder(poster) && ogCount < ogLimit) {
                 ogCount++
                 poster = fetchOgPosterCached(link)
@@ -406,7 +326,7 @@ class WeCimaProvider : MainAPI() {
 
             newMovieSearchResponse(title, link, type) {
                 posterUrl = fixUrlNull(poster)
-                this.posterHeaders = this@WeCimaProvider.posterHeaders
+                this.posterHeaders = this@WeCimaProvider.posterHeadersSafe
             }
         }.distinctBy { it.url }
 
@@ -435,7 +355,7 @@ class WeCimaProvider : MainAPI() {
 
             newMovieSearchResponse(title, link, type) {
                 posterUrl = fixUrlNull(poster)
-                this.posterHeaders = this@WeCimaProvider.posterHeaders
+                this.posterHeaders = this@WeCimaProvider.posterHeadersSafe
             }
         }.distinctBy { it.url }
 
@@ -464,20 +384,20 @@ class WeCimaProvider : MainAPI() {
 
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = fixUrlNull(poster)
-                this.posterHeaders = this@WeCimaProvider.posterHeaders
+                this.posterHeaders = this@WeCimaProvider.posterHeadersSafe
                 this.plot = plot
             }
         }
 
         return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
-            this.posterHeaders = this@WeCimaProvider.posterHeaders
+            this.posterHeaders = this@WeCimaProvider.posterHeadersSafe
             this.plot = plot
         }
     }
 
     // ---------------------------
-    // LoadLinks
+    // LoadLinks (LESS REQUESTS + MORE STABLE)
     // ---------------------------
 
     override suspend fun loadLinks(
@@ -490,100 +410,60 @@ class WeCimaProvider : MainAPI() {
         val pageUrl = data.trim()
         if (pageUrl.isBlank()) return false
 
-        val doc = app.get(pageUrl, headers = safeHeaders).document
+        val doc = app.get(
+            pageUrl,
+            headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")
+        ).document
 
-        val servers = LinkedHashSet<String>()
+        val baseCandidates = LinkedHashSet<String>()
 
-        // 0) IMPORTANT: expand data-watch gateways (WeCima real method)
-        // Extract raw data-watch links first
-        val dataWatchLinks = doc.select("[data-watch]")
-            .mapNotNull { it.attr("data-watch")?.trim() }
-            .filter { it.isNotBlank() }
+        // 1) direct media
+        doc.extractDirectMediaFromScripts().forEach { baseCandidates.add(it) }
 
-        // Expand each data-watch (decode slp_watch if present, then scrape resulting page)
-        dataWatchLinks.take(25).forEach { dw ->
-            try {
-                expandDataWatchLink(dw, pageUrl).forEach { servers.add(it) }
-            } catch (_: Throwable) {
-                // ignore
-            }
-        }
+        // 2) fast server attrs/iframes
+        doc.extractServersFast().forEach { baseCandidates.add(it) }
 
-        // 1) direct MP4/M3U8 from scripts
-        doc.extractDirectMediaFromScripts().forEach { servers.add(it) }
+        if (baseCandidates.isEmpty()) return false
 
-        // 2) data-watch / iframe / onclick / other data attrs
-        doc.extractServersFast().forEach { servers.add(it) }
+        // ✅ IMPORTANT: don't crawl too many (this causes forever loading)
+        val limited = baseCandidates.toList().take(18)
 
-        // Retry with slightly different referer if empty
-        if (servers.isEmpty()) {
-            val retryDoc = app.get(
-                pageUrl,
-                headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to "$mainUrl/"
-                )
-            ).document
-
-            retryDoc.extractDirectMediaFromScripts().forEach { servers.add(it) }
-            retryDoc.extractServersFast().forEach { servers.add(it) }
-
-            // expand data-watch again
-            val retryDataWatch = retryDoc.select("[data-watch]")
-                .mapNotNull { it.attr("data-watch")?.trim() }
-                .filter { it.isNotBlank() }
-
-            retryDataWatch.take(25).forEach { dw ->
-                try {
-                    expandDataWatchLink(dw, pageUrl).forEach { servers.add(it) }
-                } catch (_: Throwable) {
-                    // ignore
-                }
-            }
-        }
-
-        if (servers.isEmpty()) return false
-
-        // ✅ resolve internal links one step
         val finalLinks = LinkedHashSet<String>()
-        val takeN = min(servers.size, 60)
-
-        servers.toList().take(takeN).forEach { s ->
+        limited.forEach { s ->
             finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
         }
 
         if (finalLinks.isEmpty()) return false
 
-        // ✅ your API expects a SUSPEND callback in newExtractorLink
-        val suspendCb: suspend (ExtractorLink) -> Unit = { el -> callback(el) }
-
         var foundAny = false
 
-        finalLinks.forEach { link ->
+        finalLinks.distinct().take(25).forEach { link ->
             val l = link.lowercase()
 
-            // direct media
             if (l.contains(".mp4") || l.contains(".m3u8")) {
-                val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-
-                newExtractorLink(
-                    name,
-                    "WeCima Direct",
-                    link,
-                    type,
-                    suspendCb
+                val isM3u8 = l.contains(".m3u8")
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = "WeCima Direct",
+                        url = link,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = pageUrl
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to pageUrl
+                        )
+                    }
                 )
-
                 foundAny = true
                 return@forEach
             }
 
-            // normal extractors
-            try {
+            runCatching {
                 loadExtractor(link, pageUrl, subtitleCallback, callback)
                 foundAny = true
-            } catch (_: Throwable) {
-                // ignore
             }
         }
 
