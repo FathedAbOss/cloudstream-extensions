@@ -4,12 +4,14 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.util.Base64
 import java.util.LinkedHashMap
 import kotlin.math.min
 
 class WeCimaProvider : MainAPI() {
 
+    // ✅ CHANGED DOMAIN
     override var mainUrl = "https://wecima.click"
     override var name = "WeCima"
     override var lang = "ar"
@@ -26,7 +28,7 @@ class WeCimaProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // ✅ Hotlink protection for images
+    // ✅ Hotlink protection for images (MUST match the new domain)
     private val posterHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
@@ -136,7 +138,7 @@ class WeCimaProvider : MainAPI() {
         return TvType.Movie
     }
 
-    // ✅ OG fallback poster (but limited + cached)
+    // ✅ OG fallback poster (limited + cached)
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
         if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
 
@@ -161,7 +163,6 @@ class WeCimaProvider : MainAPI() {
         return result
     }
 
-    // ✅ Extract MP4/M3U8 from page scripts
     private fun Document.extractDirectMediaFromScripts(): List<String> {
         val out = LinkedHashSet<String>()
         val html = this.html()
@@ -177,7 +178,6 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ extract servers from WeCima page (fast)
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
@@ -208,7 +208,6 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
-    // ✅ Base64(urlsafe) decode for slp_watch
     private fun decodeSlpWatchUrl(encoded: String): String? {
         val raw = encoded.trim()
         if (raw.isBlank()) return null
@@ -275,11 +274,19 @@ class WeCimaProvider : MainAPI() {
         return out.toList()
     }
 
+    // ✅ internal check updated to support mirrors like wecima.click/wecima.date/etc.
+    private fun isWeCimaHost(url: String): Boolean {
+        return runCatching {
+            val host = URI(url).host?.lowercase().orEmpty()
+            host.contains("wecima.")
+        }.getOrDefault(false)
+    }
+
     private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
         val fixed = fixUrl(link).trim()
         if (fixed.isBlank()) return emptyList()
 
-        val isInternal = fixed.contains("wecima", ignoreCase = true) || fixed.startsWith(mainUrl)
+        val isInternal = fixed.startsWith(mainUrl) || isWeCimaHost(fixed)
         if (!isInternal) return listOf(fixed)
 
         if (!(fixed.contains("watch") || fixed.contains("player") || fixed.contains("play") || fixed.contains("مشاهدة"))) {
@@ -315,7 +322,7 @@ class WeCimaProvider : MainAPI() {
             if (href.isBlank()) return@forEach
 
             val link = normalizeUrl(fixUrl(href))
-            if (!link.startsWith(mainUrl)) return@forEach
+            if (!link.startsWith(mainUrl) && !isWeCimaHost(link)) return@forEach
 
             val rawName = a.text().trim().ifBlank { "حلقة" }
 
@@ -463,7 +470,6 @@ class WeCimaProvider : MainAPI() {
         val doc = app.get(pageUrl, headers = safeHeaders).document
         val servers = LinkedHashSet<String>()
 
-        // expand data-watch gateways
         val dataWatchLinks = doc.select("[data-watch]")
             .mapNotNull { it.attr("data-watch")?.trim() }
             .filter { it.isNotBlank() }
@@ -474,11 +480,9 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
-        // direct media + servers
         doc.extractDirectMediaFromScripts().forEach { servers.add(it) }
         doc.extractServersFast().forEach { servers.add(it) }
 
-        // Retry if empty
         if (servers.isEmpty()) {
             val retryDoc = app.get(
                 pageUrl,
