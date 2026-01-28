@@ -4,6 +4,7 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.select.Elements
 import java.net.URI
 import java.util.Base64
 import java.util.LinkedHashMap
@@ -312,9 +313,9 @@ class WeCimaProvider : MainAPI() {
 
         val candidates = this.select(
             "a[href*=%D8%A7%D9%84%D8%AD%D9%84%D9%82%D8%A9], " +
-                "a:contains(الحلقة), a:contains(مشاهدة), " +
-                "a[href*=/episode], a[href*=/episodes], " +
-                "a[href*=%D9%85%D8%B4%D8%A7%D9%87%D8%AF%D8%A9-%D9%85%D8%B3%D9%84%D8%B3%D9%84]"
+                    "a:contains(الحلقة), a:contains(مشاهدة), " +
+                    "a[href*=/episode], a[href*=/episodes], " +
+                    "a[href*=%D9%85%D8%B4%D8%A7%D9%87%D8%AF%D8%A9-%D9%85%D8%B3%D9%84%D8%B3%D9%84]"
         )
 
         candidates.forEach { a ->
@@ -355,27 +356,50 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // MainPage
+    // MainPage (FIXED - generic parser)
     // ---------------------------
-
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data, headers = safeHeaders).document
 
-        val elements = doc.select(
-            "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
-        )
+        // 1) Try common "card" containers first (if site still has them)
+        var cards = doc.select("article, .GridItem, .BlockItem, .Item, .post, .movie, li.item, .box")
+
+        // 2) If nothing matched (new theme), fallback to scanning anchors that look like cards
+        if (cards.isEmpty()) {
+            cards = doc.select("a[href]:has(img)")
+                .mapNotNull { it.closest("article, div, li") ?: it }
+                .let { Elements(it) }
+        }
 
         val ogLimit = 20
         var ogCount = 0
 
-        val items = elements.mapNotNull { element ->
-            val a = element.selectFirst("a[href]") ?: return@mapNotNull null
+        val items = cards.mapNotNull { card ->
+            val a = card.selectFirst("a[href]") ?: return@mapNotNull null
             val link = normalizeUrl(fixUrl(a.attr("href").trim()))
+            if (link.isBlank()) return@mapNotNull null
 
-            val title = element.extractTitleStrong() ?: return@mapNotNull null
+            // ✅ فلترة روابط “محتوى” فقط (حسب اللي شائع بـ WeCima)
+            val lower = link.lowercase()
+            val looksLikeContent =
+                lower.contains("/series/") ||
+                        lower.contains("/movie") ||
+                        lower.contains("/movies/") ||
+                        lower.contains("مشاهدة") ||
+                        lower.contains("/episode") ||
+                        lower.contains("/episodes/")
+
+            if (!looksLikeContent) return@mapNotNull null
+
+            val title =
+                card.extractTitleStrong()
+                    ?: a.attr("title")?.trim()
+                    ?: card.selectFirst("img[alt]")?.attr("alt")?.trim()
+                    ?: return@mapNotNull null
+
             val type = guessTypeFrom(link, title)
 
-            var poster = element.extractPosterFromCard()
+            var poster = card.extractPosterFromCard()
             if (looksPlaceholder(poster) && ogCount < ogLimit) {
                 ogCount++
                 poster = fetchOgPosterCached(link)
@@ -390,22 +414,34 @@ class WeCimaProvider : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
+    // ---------------------------
+    // Search (FIXED - generic parser)
+    // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
         val doc = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
 
-        val elements = doc.select(
-            "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
-        )
+        var cards = doc.select("article, .GridItem, .BlockItem, .Item, .post, .movie, li.item, .box")
+        if (cards.isEmpty()) {
+            cards = doc.select("a[href]:has(img)")
+                .mapNotNull { it.closest("article, div, li") ?: it }
+                .let { Elements(it) }
+        }
 
-        val items = elements.mapNotNull { element ->
-            val a = element.selectFirst("a[href]") ?: return@mapNotNull null
+        val items = cards.mapNotNull { card ->
+            val a = card.selectFirst("a[href]") ?: return@mapNotNull null
             val link = normalizeUrl(fixUrl(a.attr("href").trim()))
+            if (link.isBlank()) return@mapNotNull null
 
-            val title = element.extractTitleStrong() ?: return@mapNotNull null
+            val title =
+                card.extractTitleStrong()
+                    ?: a.attr("title")?.trim()
+                    ?: card.selectFirst("img[alt]")?.attr("alt")?.trim()
+                    ?: return@mapNotNull null
+
             val type = guessTypeFrom(link, title)
 
-            var poster = element.extractPosterFromCard()
+            var poster = card.extractPosterFromCard()
             if (looksPlaceholder(poster)) {
                 poster = fetchOgPosterCached(link)
             }
