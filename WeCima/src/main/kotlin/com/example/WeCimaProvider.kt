@@ -10,7 +10,7 @@ import kotlin.math.min
 
 class WeCimaProvider : MainAPI() {
 
-    override var mainUrl = "https://wecima.date"
+    override var mainUrl = "https://wecima.click"
     override var name = "WeCima"
     override var lang = "ar"
     override var hasMainPage = true
