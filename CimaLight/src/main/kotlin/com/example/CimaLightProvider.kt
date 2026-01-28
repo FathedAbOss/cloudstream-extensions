@@ -386,37 +386,66 @@ class CimaLightProvider : MainAPI() {
     // Search (FIXED)
     // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
-        val q = URLEncoder.encode(query.trim(), "UTF-8")
-        val url = "$mainUrl/search.php?keywords=$q&video-id="
-        val document = app.get(url, headers = safeHeaders).document
+    val qRaw = query.trim()
+    if (qRaw.isBlank()) return emptyList()
 
-        val anchors = document.select("a[href]")
-        return anchors.mapNotNull { a ->
-            val title = a.text().trim()
-            if (title.isBlank()) return@mapNotNull null
+    // 1) Seed cookies/session (some WAF rules require a prior page visit)
+    runCatching { app.get("$mainUrl/main15", headers = safeHeaders) }
 
-            val hrefRaw = a.attr("href").trim()
-            if (hrefRaw.isBlank()) return@mapNotNull null
+    val headers = safeHeaders + mapOf(
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language" to "ar,en-US;q=0.9,en;q=0.8"
+    )
 
-            val link = fixUrl(hrefRaw)
-            if (!link.startsWith("http")) return@mapNotNull null
+    val q = URLEncoder.encode(qRaw, "UTF-8")
+    val getUrl = "$mainUrl/search.php?keywords=$q&video-id="
 
-            val isInternal = link.contains("cimalight", ignoreCase = true) || link.startsWith(mainUrl)
-            if (!isInternal) return@mapNotNull null
+    // 2) Try GET first
+    val docGet = runCatching { app.get(getUrl, headers = headers).document }.getOrNull()
 
-            val lower = (title + " " + link).lowercase()
-            val tvType = if (
-                lower.contains("مسلسل") || lower.contains("الحلقة") ||
-                lower.contains("season") || lower.contains("episode")
-            ) TvType.TvSeries else TvType.Movie
+    // 3) If GET blocked/empty, try POST (common on PHP search forms)
+    val doc = docGet ?: runCatching {
+        app.post(
+            "$mainUrl/search.php",
+            data = mapOf(
+                "keywords" to qRaw,
+                "video-id" to ""
+            ),
+            headers = headers
+        ).document
+    }.getOrNull() ?: return emptyList()
 
-            val poster = extractPosterFromAnchor(a)
+    // 4) Parse results broadly (site HTML changes often)
+    val anchors = doc.select("a[href]")
+    return anchors.mapNotNull { a ->
+        val title = a.text().trim()
+        if (title.isBlank()) return@mapNotNull null
 
-            newMovieSearchResponse(title, link, tvType) {
-                this.posterUrl = poster
-            }
-        }.distinctBy { it.url }
-    }
+        val hrefRaw = a.attr("href").trim()
+        if (hrefRaw.isBlank()) return@mapNotNull null
+
+        val link = fixUrl(hrefRaw)
+        if (!link.startsWith("http")) return@mapNotNull null
+
+        // keep only internal items
+        val internal = link.contains("cimalight", ignoreCase = true) || link.startsWith(mainUrl)
+        if (!internal) return@mapNotNull null
+
+        // optional type inference
+        val lower = (title + " " + link).lowercase()
+        val tvType =
+            if (lower.contains("مسلسل") || lower.contains("الحلقة") || lower.contains("season") || lower.contains("episode"))
+                TvType.TvSeries
+            else
+                TvType.Movie
+
+        val poster = extractPosterFromAnchor(a)
+
+        newMovieSearchResponse(title, link, tvType) {
+            this.posterUrl = poster
+        }
+    }.distinctBy { it.url }
+}
 
     // ---------------------------
     // Load (Movie vs Series)
