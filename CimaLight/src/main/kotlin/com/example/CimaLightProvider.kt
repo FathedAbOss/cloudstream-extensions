@@ -394,35 +394,31 @@ override suspend fun search(query: String): List<SearchResponse> {
         "Accept-Language" to "ar,en-US;q=0.9,en;q=0.8"
     )
 
-    fun parseSearchDoc(doc: Document): List<SearchResponse> {
+    fun looksLikeContentUrl(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("watch.php?vid=") ||
+            u.contains("movie") ||
+            u.contains("series") ||
+            u.contains("season") ||
+            u.contains("episode") ||
+            u.contains("video") ||
+            u.contains("details")
+    }
+
+    fun parseDoc(doc: Document): List<SearchResponse> {
         val anchors = doc.select("a[href]")
         return anchors.mapNotNull { a ->
             val title = a.text().trim()
             if (title.isBlank()) return@mapNotNull null
 
-            val hrefRaw = a.attr("href").trim()
-            if (hrefRaw.isBlank()) return@mapNotNull null
-
-            val link = fixUrl(hrefRaw)
+            val link = fixUrl(a.attr("href").trim())
             if (!link.startsWith("http")) return@mapNotNull null
 
             val internal = link.startsWith(mainUrl) || link.contains("cimalight", ignoreCase = true)
             if (!internal) return@mapNotNull null
+            if (!looksLikeContentUrl(link)) return@mapNotNull null
 
-            // Important: keep only “content-like” pages to avoid random nav/footer links
-            val l = link.lowercase()
-            val looksLikeContent =
-                l.contains("watch.php?vid=") ||
-                l.contains("/movie") ||
-                l.contains("/series") ||
-                l.contains("/show") ||
-                l.contains("/video") ||
-                l.contains("details") ||
-                l.contains("film") ||
-                l.contains("episode") ||
-                l.contains("season")
-
-            if (!looksLikeContent) return@mapNotNull null
+            val poster = extractPosterFromAnchor(a)
 
             val lower = (title + " " + link).lowercase()
             val tvType = if (
@@ -430,77 +426,88 @@ override suspend fun search(query: String): List<SearchResponse> {
                 lower.contains("season") || lower.contains("episode")
             ) TvType.TvSeries else TvType.Movie
 
-            val poster = extractPosterFromAnchor(a)
             newMovieSearchResponse(title, link, tvType) { this.posterUrl = poster }
         }.distinctBy { it.url }
     }
 
-    // ---- 0) Seed cookies/session (helps some WAF setups)
+    // 0) Seed cookies
     runCatching { app.get("$mainUrl/main15", headers = headers) }
 
-    // ---- 1) Try GET search
+    // 1) Try GET search
     val getDoc = runCatching {
         val enc = URLEncoder.encode(q, "UTF-8")
-        app.get("$mainUrl/search.php?keywords=$enc&video-id mocking=", headers = headers).document
+        app.get("$mainUrl/search.php?keywords=$enc&video-id=", headers = headers).document
     }.getOrNull()
 
-    val getResults = getDoc?.let { parseSearchDoc(it) }.orEmpty()
-    if (getResults.isNotEmpty()) return getResults
+    val getResults = getDoc?.let { parseDoc(it) }.orEmpty()
+    if (getResults.size >= 5) return getResults
 
-    // ---- 2) Try POST search (many PHP sites require POST)
+    // 2) Try POST search
     val postDoc = runCatching {
         app.post(
             "$mainUrl/search.php",
-            data = mapOf(
-                "keywords" to q,
-                "video-id" to ""
-            ),
+            data = mapOf("keywords" to q, "video-id" to ""),
             headers = headers
         ).document
     }.getOrNull()
 
-    val postResults = postDoc?.let { parseSearchDoc(it) }.orEmpty()
-    if (postResults.isNotEmpty()) return postResults
+    val postResults = postDoc?.let { parseDoc(it) }.orEmpty()
+    if (postResults.size >= 5) return postResults
 
-    // ---- 3) Fallback search (works even if search.php is blocked)
-    // Scrape a few pages and filter titles locally
-    val fallbackPages = listOf(
-        "$mainUrl/movies.php",
-        "$mainUrl/main15",
-        "$mainUrl/most.php"
-    )
-
+    // 3) Strong fallback: paginate movies + all-series (bounded)
     val needle = q.lowercase()
-    val fallbackOut = ArrayList<SearchResponse>()
+    val out = LinkedHashSet<SearchResponse>()
 
-    for (p in fallbackPages) {
-        val doc = runCatching { app.get(p, headers = headers).document }.getOrNull() ?: continue
+    suspend fun scrapePaged(base: String, maxPages: Int) {
+        for (p in 1..maxPages) {
+            // stop early if we have enough
+            if (out.size >= 30) return
 
-        // reuse your main-page-ish selector style but broader
-        val anchors = doc.select("h3 a, h2 a, .Thumb--GridItem a, .Thumb--Grid a, a[href*=\"watch.php?vid=\"]")
-        for (a in anchors) {
-            val title = a.text().trim()
-            if (title.isBlank()) continue
-            if (!title.lowercase().contains(needle)) continue
+            val url = if (base.contains("?")) "$base&page=$p" else "$base?page=$p"
+            val doc = runCatching { app.get(url, headers = headers).document }.getOrNull() ?: continue
 
-            val link = fixUrl(a.attr("href").trim())
-            if (!link.startsWith("http")) continue
+            // broad selectors + watch links
+            val anchors = doc.select(
+                "h3 a, h2 a, .Thumb--GridItem a, .Thumb--Grid a, a[href*=\"watch.php?vid=\"]"
+            )
 
-            val poster = extractPosterFromAnchor(a)
-            val lower = (title + " " + link).lowercase()
-            val tvType = if (
-                lower.contains("مسلسل") || lower.contains("الحلقة") ||
-                lower.contains("season") || lower.contains("episode")
-            ) TvType.TvSeries else TvType.Movie
+            for (a in anchors) {
+                val title = a.text().trim()
+                if (title.isBlank()) continue
 
-            fallbackOut.add(newMovieSearchResponse(title, link, tvType) { this.posterUrl = poster })
+                // match by title OR by link containing the keyword
+                val href = a.attr("href").trim()
+                val link = fixUrl(href)
+                val hay = (title + " " + link).lowercase()
+                if (!hay.contains(needle)) continue
+
+                if (!link.startsWith("http")) continue
+                val internal = link.startsWith(mainUrl) || link.contains("cimalight", ignoreCase = true)
+                if (!internal) continue
+
+                val poster = extractPosterFromAnchor(a)
+
+                val tvType = if (
+                    hay.contains("مسلسل") || hay.contains("الحلقة") ||
+                    hay.contains("season") || hay.contains("episode")
+                ) TvType.TvSeries else TvType.Movie
+
+                out.add(newMovieSearchResponse(title, link, tvType) { this.posterUrl = poster })
+            }
         }
-
-        // stop early if we already found enough
-        if (fallbackOut.size >= 25) break
     }
 
-    return fallbackOut.distinctBy { it.url }
+    // movies pages can be deep → search first ~15 pages (fast enough + better coverage)
+    scrapePaged("$mainUrl/movies.php", maxPages = 15)
+
+    // series pages exist and are important for missing series results
+    scrapePaged("$mainUrl/all-series.php", maxPages = 15)
+
+    // extra coverage: a couple big categories (optional but useful)
+    scrapePaged("$mainUrl/category.php?cat=online-movies3", maxPages = 8)
+    scrapePaged("$mainUrl/category.php?cat=english-movies1", maxPages = 8)
+
+    return out.toList()
 }
 
     // ---------------------------
