@@ -21,9 +21,6 @@ class WeCimaProvider : MainAPI() {
         TvType.Anime
     )
 
-    // ✅ IMPORTANT: Handles Cloudflare / anti-bot challenges
-    private val cf = CloudflareKiller()
-
     private val safeHeaders = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/"
@@ -144,7 +141,7 @@ class WeCimaProvider : MainAPI() {
         if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
 
         val result = try {
-            val d = app.get(detailsUrl, headers = safeHeaders, interceptor = cf).document
+            val d = app.get(detailsUrl, headers = safeHeaders).document
             val og = d.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
             if (!og.isNullOrBlank()) fixUrl(og)
             else {
@@ -184,7 +181,6 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // IMPORTANT: WeCima uses data-watch heavily
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
@@ -234,7 +230,6 @@ class WeCimaProvider : MainAPI() {
         }
     }
 
-    // ✅ pull slp_watch=... from a URL
     private fun extractSlpWatchParam(url: String): String? {
         val u = url.trim()
         if (!u.contains("slp_watch=")) return null
@@ -246,7 +241,6 @@ class WeCimaProvider : MainAPI() {
         }
     }
 
-    // ✅ Follow data-watch -> decode slp_watch -> fetch decoded page -> extract iframe/mp4/m3u8/servers
     private suspend fun expandDataWatchLink(dataWatchUrl: String, referer: String): List<String> {
         val out = LinkedHashSet<String>()
 
@@ -258,46 +252,29 @@ class WeCimaProvider : MainAPI() {
 
         if (!decodedUrl.isNullOrBlank()) {
             out.add(decodedUrl)
-
-            try {
+            runCatching {
                 val doc = app.get(
                     decodedUrl,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer
-                    ),
-                    interceptor = cf
+                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
                 ).document
-
                 doc.extractServersFast().forEach { out.add(it) }
                 doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            } catch (_: Throwable) {
-                // ignore
             }
         } else {
             out.add(fixed)
-
-            try {
+            runCatching {
                 val doc = app.get(
                     fixed,
-                    headers = mapOf(
-                        "User-Agent" to USER_AGENT,
-                        "Referer" to referer
-                    ),
-                    interceptor = cf
+                    headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
                 ).document
-
                 doc.extractServersFast().forEach { out.add(it) }
                 doc.extractDirectMediaFromScripts().forEach { out.add(it) }
-            } catch (_: Throwable) {
-                // ignore
             }
         }
 
         return out.toList()
     }
 
-    // ✅ Resolve internal watch/player pages one step deeper (kept)
     private suspend fun resolveInternalIfNeeded(link: String, referer: String): List<String> {
         val fixed = fixUrl(link).trim()
         if (fixed.isBlank()) return emptyList()
@@ -309,14 +286,10 @@ class WeCimaProvider : MainAPI() {
             return listOf(fixed)
         }
 
-        return try {
+        return runCatching {
             val doc = app.get(
                 fixed,
-                headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to referer
-                ),
-                interceptor = cf
+                headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)
             ).document
 
             val out = LinkedHashSet<String>()
@@ -324,12 +297,9 @@ class WeCimaProvider : MainAPI() {
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
             if (out.isEmpty()) listOf(fixed) else out.toList()
-        } catch (_: Throwable) {
-            listOf(fixed)
-        }
+        }.getOrElse { listOf(fixed) }
     }
 
-    // ✅ better episode extraction for series pages
     private fun Document.extractEpisodes(seriesUrl: String): List<Episode> {
         val found = LinkedHashMap<String, Episode>()
 
@@ -382,7 +352,7 @@ class WeCimaProvider : MainAPI() {
     // ---------------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val doc = app.get(request.data, headers = safeHeaders, interceptor = cf).document
+        val doc = app.get(request.data, headers = safeHeaders).document
 
         val elements = doc.select(
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
@@ -399,7 +369,6 @@ class WeCimaProvider : MainAPI() {
             val type = guessTypeFrom(link, title)
 
             var poster = element.extractPosterFromCard()
-
             if (looksPlaceholder(poster) && ogCount < ogLimit) {
                 ogCount++
                 poster = fetchOgPosterCached(link)
@@ -416,7 +385,7 @@ class WeCimaProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim().replace(" ", "+")
-        val doc = app.get("$mainUrl/?s=$q", headers = safeHeaders, interceptor = cf).document
+        val doc = app.get("$mainUrl/?s=$q", headers = safeHeaders).document
 
         val elements = doc.select(
             "article, div.col-md-2, div.col-xs-6, div.movie, article.post, div.post-block, div.box, li.item, div.BlockItem, div.GridItem, div.Item"
@@ -448,7 +417,7 @@ class WeCimaProvider : MainAPI() {
     // ---------------------------
 
     override suspend fun load(url: String): LoadResponse {
-        val doc = app.get(url, headers = safeHeaders, interceptor = cf).document
+        val doc = app.get(url, headers = safeHeaders).document
 
         val title = doc.selectFirst("h1")?.text()?.trim()
             ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
@@ -491,38 +460,29 @@ class WeCimaProvider : MainAPI() {
         val pageUrl = data.trim()
         if (pageUrl.isBlank()) return false
 
-        val doc = app.get(pageUrl, headers = safeHeaders, interceptor = cf).document
-
+        val doc = app.get(pageUrl, headers = safeHeaders).document
         val servers = LinkedHashSet<String>()
 
-        // 0) IMPORTANT: expand data-watch gateways (WeCima real method)
+        // expand data-watch gateways
         val dataWatchLinks = doc.select("[data-watch]")
             .mapNotNull { it.attr("data-watch")?.trim() }
             .filter { it.isNotBlank() }
 
         dataWatchLinks.take(25).forEach { dw ->
-            try {
+            runCatching {
                 expandDataWatchLink(dw, pageUrl).forEach { servers.add(it) }
-            } catch (_: Throwable) {
-                // ignore
             }
         }
 
-        // 1) direct MP4/M3U8 from scripts
+        // direct media + servers
         doc.extractDirectMediaFromScripts().forEach { servers.add(it) }
-
-        // 2) data-watch / iframe / onclick / other data attrs
         doc.extractServersFast().forEach { servers.add(it) }
 
-        // Retry with slightly different referer if empty
+        // Retry if empty
         if (servers.isEmpty()) {
             val retryDoc = app.get(
                 pageUrl,
-                headers = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to "$mainUrl/"
-                ),
-                interceptor = cf
+                headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")
             ).document
 
             retryDoc.extractDirectMediaFromScripts().forEach { servers.add(it) }
@@ -533,20 +493,16 @@ class WeCimaProvider : MainAPI() {
                 .filter { it.isNotBlank() }
 
             retryDataWatch.take(25).forEach { dw ->
-                try {
+                runCatching {
                     expandDataWatchLink(dw, pageUrl).forEach { servers.add(it) }
-                } catch (_: Throwable) {
-                    // ignore
                 }
             }
         }
 
         if (servers.isEmpty()) return false
 
-        // ✅ resolve internal links one step
         val finalLinks = LinkedHashSet<String>()
         val takeN = min(servers.size, 60)
-
         servers.toList().take(takeN).forEach { s ->
             finalLinks.addAll(resolveInternalIfNeeded(s, pageUrl))
         }
@@ -558,7 +514,6 @@ class WeCimaProvider : MainAPI() {
         finalLinks.distinct().forEach { link ->
             val l = link.lowercase()
 
-            // ✅ direct media -> MUST callback the created ExtractorLink
             if (l.contains(".mp4") || l.contains(".m3u8")) {
                 val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
 
@@ -581,12 +536,9 @@ class WeCimaProvider : MainAPI() {
                 return@forEach
             }
 
-            // ✅ normal extractors
-            try {
+            runCatching {
                 loadExtractor(link, pageUrl, subtitleCallback, callback)
                 foundAny = true
-            } catch (_: Throwable) {
-                // ignore
             }
         }
 
