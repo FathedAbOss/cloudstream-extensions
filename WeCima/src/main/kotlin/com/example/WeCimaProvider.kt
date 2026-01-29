@@ -11,6 +11,8 @@ import java.util.Base64
 
 class WeCimaProvider : MainAPI() {
 
+    // Note: This domain changes frequently (e.g., .show, .tube, .date).
+    // If the provider stops working, check the website URL.
     override var mainUrl = "https://wecima.date"
     override var name = "WeCima"
     override var lang = "ar"
@@ -22,7 +24,8 @@ class WeCimaProvider : MainAPI() {
         "Referer" to "$mainUrl/"
     )
 
-    // ---------- performance caps ----------
+    // ---------- Performance Caps ----------
+    // Limits to prevent the app from freezing on slow scraping
     private val MAX_FINAL_LINKS = 12
     private val MAX_TOTAL_CANDIDATES = 140
     private val MAX_INTERNAL_RESOLVES = 18
@@ -35,37 +38,39 @@ class WeCimaProvider : MainAPI() {
     )
 
     // ---------------------------
-    // Poster extractor
+    // Poster Extractor
     // ---------------------------
     private fun extractPosterFromAnchor(a: Element): String? {
+        // Attempts to find the closest container to the link, then the image within it
         val container = a.closest("article, li, .movie, .post, .item, .Thumb--GridItem, .Thumb--Grid, .poster, .Thumb")
         val img = (container ?: a).selectFirst("img") ?: return null
 
-        val posterRaw =
-            img.attr("src").trim().ifBlank {
-                img.attr("data-src").trim().ifBlank {
-                    img.attr("data-original").trim().ifBlank {
-                        img.attr("data-lazy-src").trim().ifBlank {
-                            img.attr("srcset").trim()
-                                .split(" ")
-                                .firstOrNull { it.startsWith("http") || it.startsWith("/") }
-                                ?.trim()
-                                .orEmpty()
-                        }
+        // Tries standard src, then lazy-loading attributes
+        val posterRaw = img.attr("src").trim().ifBlank {
+            img.attr("data-src").trim().ifBlank {
+                img.attr("data-original").trim().ifBlank {
+                    img.attr("data-lazy-src").trim().ifBlank {
+                        img.attr("srcset").trim()
+                            .split(" ")
+                            .firstOrNull { it.startsWith("http") || it.startsWith("/") }
+                            ?.trim()
+                            .orEmpty()
                     }
                 }
             }
+        }
 
         return fixUrlNull(posterRaw)
     }
 
     // ---------------------------
-    // helpers: extract candidates
+    // Helpers: Extract Candidates
     // ---------------------------
     private fun Document.extractDirectMediaFromHtml(): List<String> {
         val out = LinkedHashSet<String>()
         val html = this.html()
 
+        // Regex to find raw m3u8 or mp4 links in the source code
         Regex("""https?://[^\s"'<>]+?\.(m3u8|mp4)(\?[^\s"'<>]+)?""", RegexOption.IGNORE_CASE)
             .findAll(html).forEach { out.add(it.value) }
 
@@ -81,13 +86,13 @@ class WeCimaProvider : MainAPI() {
     private fun Document.extractServersSmart(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // data-watch
+        // Check data-watch attributes
         select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // data-* embeds
+        // Check common embed data attributes
         val attrs = listOf("data-embed-url", "data-url", "data-href", "data-embed", "data-src", "data-link")
         for (a in attrs) {
             select("[$a]").forEach {
@@ -96,31 +101,30 @@ class WeCimaProvider : MainAPI() {
             }
         }
 
-        // iframe
+        // Check iframes
         select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
 
-        // onclick URLs
+        // Check onclick events for URLs
         select("[onclick]").forEach {
             val oc = it.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
             if (m != null) out.add(fixUrl(m.value))
         }
 
-        // anchors (lite smartare filter)
+        // Check standard anchors with keywords indicating a player/stream
         select("a[href]").forEach {
             val href = it.attr("href").trim()
             if (href.isBlank()) return@forEach
             val u = fixUrl(href)
             val l = u.lowercase()
-            val useful =
-                l.contains("watch") || l.contains("player") || l.contains("embed") ||
-                l.contains("stream") || l.contains("dood") || l.contains("mixdrop") ||
-                l.contains("ok.ru") || l.contains("uqload") || l.contains("filemoon") ||
-                l.contains("streamtape") || l.contains("vidoza") ||
-                l.contains(".m3u8") || l.contains(".mp4")
+            val useful = l.contains("watch") || l.contains("player") || l.contains("embed") ||
+                    l.contains("stream") || l.contains("dood") || l.contains("mixdrop") ||
+                    l.contains("ok.ru") || l.contains("uqload") || l.contains("filemoon") ||
+                    l.contains("streamtape") || l.contains("vidoza") ||
+                    l.contains(".m3u8") || l.contains(".mp4")
             if (useful) out.add(u)
         }
 
@@ -128,19 +132,22 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // redirect helper
+    // Redirect Helper
     // ---------------------------
     private fun Document.extractJsOrMetaRedirect(): String? {
+        // Meta refresh
         selectFirst("meta[http-equiv~=(?i)refresh]")?.attr("content")?.let { c ->
             val u = c.substringAfter("url=", "").trim()
             if (u.startsWith("http")) return u
         }
 
         val html = this.html()
+        // JS location.replace
         Regex("""location\.replace\(\s*['"]([^'"]+)['"]\s*\)""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
 
+        // JS window.location
         Regex("""window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.getOrNull(1)?.trim()
             ?.let { if (it.startsWith("http")) return it }
@@ -164,7 +171,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // slp_watch Base64 URL-safe decode
+    // SLP_WATCH Base64 URL-safe Decode
     // ---------------------------
     private fun extractSlpWatchParam(url: String): String? {
         val u = url.trim()
@@ -176,6 +183,7 @@ class WeCimaProvider : MainAPI() {
         val raw = encoded.trim()
         if (raw.isBlank()) return null
 
+        // Standardize Base64 string
         val normalized = raw
             .replace('-', '+')
             .replace('_', '/')
@@ -198,12 +206,14 @@ class WeCimaProvider : MainAPI() {
         val fixed = fixUrl(dataWatchUrl).trim()
         if (fixed.isBlank()) return emptyList()
 
+        // 1. Check if it is a Base64 encoded slp_watch link
         val slp = extractSlpWatchParam(fixed)
         val decodedUrl = slp?.let { decodeSlpWatchUrl(it) }
         val target = decodedUrl ?: fixed
 
         out.add(target)
 
+        // 2. Visit the target and extract video links/servers
         runCatching {
             val (finalUrl, doc) = getDocFollowRedirectOnce(target, referer) ?: return@runCatching
             out.add(finalUrl)
@@ -215,7 +225,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // internal logic
+    // Internal Logic
     // ---------------------------
     private fun isInternal(url: String): Boolean {
         val u = url.lowercase()
@@ -235,7 +245,7 @@ class WeCimaProvider : MainAPI() {
         return u.contains(".m3u8") || u.contains(".mp4")
     }
 
-    private fun emitDirectMedia(url: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun emitDirectMedia(url: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
         val clean = url.trim()
         if (!clean.startsWith("http")) return false
         if (!isDirectMedia(clean)) return false
@@ -273,7 +283,7 @@ class WeCimaProvider : MainAPI() {
         doc.extractServersSmart().forEach { out.add(it) }
         doc.extractDirectMediaFromHtml().forEach { out.add(it) }
 
-        // expand some data-watch
+        // Expand some data-watch attributes if found
         doc.select("[data-watch]")
             .mapNotNull { it.attr("data-watch").trim().ifBlank { null } }
             .take(12)
@@ -285,7 +295,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // main page
+    // Main Page
     // ---------------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data, headers = safeHeaders).document
@@ -307,16 +317,16 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // search (GET + fallback crawl)
+    // Search (GET + Fallback Crawl)
     // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val qRaw = query.trim()
         if (qRaw.isBlank()) return emptyList()
 
-        // seed cookies
+        // Seed cookies/session
         runCatching { app.get("$mainUrl/", headers = safeHeaders) }
 
-        // try site search
+        // Try standard site search
         val enc = URLEncoder.encode(qRaw, "UTF-8")
         val url = "$mainUrl/search?keyword=$enc"
 
@@ -338,7 +348,7 @@ class WeCimaProvider : MainAPI() {
 
         if (results.size >= 5) return results
 
-        // fallback crawl (bounded)
+        // Fallback: manually crawl main pages if search fails or returns few results
         val needle = qRaw.lowercase()
         val out = LinkedHashSet<SearchResponse>()
         val pages = listOf("$mainUrl/movies", "$mainUrl/series", "$mainUrl/trending")
@@ -369,7 +379,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // load (movie vs series)
+    // Load (Movie vs Series)
     // ---------------------------
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url, headers = safeHeaders).document
@@ -378,7 +388,7 @@ class WeCimaProvider : MainAPI() {
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()?.let { fixUrlNull(it) }
         val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
-        // episodes: find watch links that look like episodes
+        // Detect episodes
         val eps = doc.select("a[href*=\"watch\"], a[href*=\"episode\"], a[href*=\"/ep/\"]")
             .mapNotNull { a ->
                 val text = a.text().trim()
@@ -386,7 +396,7 @@ class WeCimaProvider : MainAPI() {
                 if (text.isBlank() || link.isBlank()) return@mapNotNull null
 
                 val looksEpisode = text.contains("الحلقة") ||
-                    Regex("""\bEpisode\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)
+                        Regex("""\bEpisode\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)
 
                 if (!looksEpisode) return@mapNotNull null
 
@@ -423,7 +433,7 @@ class WeCimaProvider : MainAPI() {
     }
 
     // ---------------------------
-    // loadLinks (fast + multi)
+    // LoadLinks (Fast + Multi)
     // ---------------------------
     override suspend fun loadLinks(
         data: String,
@@ -444,6 +454,7 @@ class WeCimaProvider : MainAPI() {
             callback(it)
         }
 
+        // Recursive-like function to process a candidate URL
         suspend fun tryCandidate(u: String, referer: String) {
             if (emittedCount >= MAX_FINAL_LINKS) return
             val url = u.trim()
