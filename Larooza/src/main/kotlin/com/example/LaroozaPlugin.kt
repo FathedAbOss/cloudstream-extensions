@@ -5,9 +5,8 @@ import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
-class LaroozaPlugin : Plugin() {
+class Cima4UPlugin : Plugin() {
     override fun load(context: Context) {
-        // We do NOT import registerMainAPI; we just call it.
-        registerMainAPI(LaroozaProvider())
+        registerMainAPI(Cima4UProvider())
     }
 }
