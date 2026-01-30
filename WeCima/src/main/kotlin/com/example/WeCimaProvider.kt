@@ -13,7 +13,7 @@ import kotlin.math.min
 
 class WeCimaProvider : MainAPI() {
 
-    // Default (رح يتعدل تلقائياً لو وقع الدومين)
+    // Default (will auto-update if domain fails)
     override var mainUrl = "https://wecima.date"
     override var name = "WeCima"
     override var lang = "ar"
@@ -21,7 +21,7 @@ class WeCimaProvider : MainAPI() {
 
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
-    // -------- Mirrors (لو wecima.date وقع) --------
+    // -------- Mirrors (Fallback) --------
     private val mirrors = listOf(
         "https://wecima.date",
         "https://wecima.show",
@@ -36,8 +36,8 @@ class WeCimaProvider : MainAPI() {
 
     private val MAX_CANDIDATES = 90
     private val MAX_FINAL_LINKS = 45
-    private val MAX_INTERNAL_GATEWAYS = 16      // كم بوابة داخلية نفتح “مرة واحدة”
-    private val MAX_DW_EXPAND = 14              // كم data-watch نوسع
+    private val MAX_INTERNAL_GATEWAYS = 16      // How many internal gates to open "once"
+    private val MAX_DW_EXPAND = 14              // How many data-watch to expand
     private val PER_CANDIDATE_TIMEOUT_MS = 5500L
 
     private val posterCache = LinkedHashMap<String, String?>()
@@ -67,6 +67,9 @@ class WeCimaProvider : MainAPI() {
     private fun posterHeaders(): Map<String, String> = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to "$mainUrl/",
+        "Origin" to mainUrl, // Kept for image fix
+        "Sec-Fetch-Dest" to "image", // Kept for image fix
+        "Sec-Fetch-Mode" to "no-cors", // Kept for image fix
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
@@ -78,7 +81,7 @@ class WeCimaProvider : MainAPI() {
         if (baseResolved) return
         baseResolved = true
 
-        // جرّب مرايا بسرعة، وثبت أول وحدة ترد
+        // Try mirrors quickly, stick to first success
         for (m in mirrors) {
             val ok = withTimeoutOrNull(2500L) {
                 runCatching { app.get(m, headers = mapOf("User-Agent" to USER_AGENT)).document }.isSuccess
@@ -88,7 +91,7 @@ class WeCimaProvider : MainAPI() {
                 return
             }
         }
-        // لو كله فشل، خلي default كما هو
+        // If all fail, keep default
     }
 
     // ---------------------------
@@ -183,18 +186,13 @@ class WeCimaProvider : MainAPI() {
         return currentHostSuffixes().any { suf -> host.endsWith(suf) }
     }
 
-    private fun isDirectMedia(u: String): Boolean {
-        val x = u.lowercase()
-        return x.contains(".mp4") || x.contains(".m3u8")
-    }
-
     private fun isGatewayInternal(u: String): Boolean {
         val x = u.lowercase()
         return isInternalUrl(u) && (
-            x.contains("watch") || x.contains("play") || x.contains("player") ||
-            x.contains("go") || x.contains("download") || x.contains("embed") ||
-            x.contains("مشاهدة")
-        )
+                x.contains("watch") || x.contains("play") || x.contains("player") ||
+                        x.contains("go") || x.contains("download") || x.contains("embed") ||
+                        x.contains("مشاهدة")
+                )
     }
 
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
@@ -217,7 +215,18 @@ class WeCimaProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         ensureBaseUrl()
 
-        val doc = app.get(request.data.replace(mirrors.first(), mainUrl), headers = safeHeaders()).document
+        // Handle mirror replacement logic
+        val baseUrl = request.data.replace(mirrors.first(), mainUrl)
+
+        // Handle pagination correctly
+        val url = if (page > 1) {
+            val base = if (baseUrl.endsWith("/")) baseUrl else "$baseUrl/"
+            "${base}page/$page"
+        } else {
+            baseUrl
+        }
+
+        val doc = app.get(url, headers = safeHeaders()).document
         val elements = doc.select(
             "div.Thumb--GridItem, div.GridItem, div.BlockItem, div.item, article, div.movie, li.item, .Thumb, .post-block, .post, .item-box"
         )
@@ -427,8 +436,8 @@ class WeCimaProvider : MainAPI() {
 
     /**
      * ✅ StreamPlay rule:
-     * افتح الرابط الداخلي “مرة واحدة”، استخرج iframe/data/mp4/m3u8/روابط خارجية، ورجّعها.
-     * ممنوع recursion.
+     * Open internal link "ONCE", extract iframe/data/mp4/m3u8/external, return.
+     * No recursion.
      */
     private suspend fun resolveInternalOnce(url: String, referer: String): List<String> {
         val fixed = fixUrl(url).trim()
@@ -438,11 +447,11 @@ class WeCimaProvider : MainAPI() {
             val doc = app.get(fixed, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to referer)).document
             val out = LinkedHashSet<String>()
 
-            // نفس أدوات discovery (بس داخل الصفحة الداخلية)
+            // Same discovery tools (but inside internal page)
             doc.extractServersFast().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-            // data-watch توسعة خفيفة
+            // Light data-watch expansion
             var dwCount = 0
             doc.select("[data-watch]").forEach {
                 if (dwCount >= 6) return@forEach
@@ -470,7 +479,7 @@ class WeCimaProvider : MainAPI() {
             if (!isGatewayInternal(c) && !(c.contains("slp_watch="))) continue
 
             val more = withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
-                // إذا data-watch فيه slp_watch، وسّعه أولاً
+                // If data-watch has slp_watch, expand it first
                 if (c.contains("slp_watch=")) {
                     expandDataWatchLink(c, pageUrl)
                 } else {
@@ -525,8 +534,8 @@ class WeCimaProvider : MainAPI() {
 
         val containers = this.select(
             ".episodes, #episodes, .episode-list, .eps, .ep, .episodes-list, " +
-                "div:has(a:matchesOwn(S\\d+\\s*:\\s*E\\d+)), " +
-                "div:has(a[href*=episode]), ul:has(a[href*=episode])"
+                    "div:has(a:matchesOwn(S\\d+\\s*:\\s*E\\d+)), " +
+                    "div:has(a[href*=episode]), ul:has(a[href*=episode])"
         )
         val scope = if (containers.isNotEmpty()) containers else listOf(this)
 
@@ -546,20 +555,20 @@ class WeCimaProvider : MainAPI() {
 
             // ignore navbar junk
             val bad = text.contains("WECIMA", true) ||
-                text.contains("WeCima", true) ||
-                text.contains("افلام", true) ||
-                text.contains("مسلسلات", true) ||
-                text.contains("الرئيسية", true)
+                    text.contains("WeCima", true) ||
+                    text.contains("افلام", true) ||
+                    text.contains("مسلسلات", true) ||
+                    text.contains("الرئيسية", true)
             if (bad) return@forEach
 
             val looksLikeEpisode =
                 link.contains("/episode", true) ||
-                link.contains("/episodes", true) ||
-                link.contains("الحلقة", true) ||
-                text.contains("الحلقة") ||
-                sxe.containsMatchIn(text) ||
-                // allow "مشاهدة" buttons if link looks episode-ish
-                (text == "مشاهدة" && (link.contains("episode", true) || link.contains("الحلقة", true)))
+                        link.contains("/episodes", true) ||
+                        link.contains("الحلقة", true) ||
+                        text.contains("الحلقة") ||
+                        sxe.containsMatchIn(text) ||
+                        // allow "مشاهدة" buttons if link looks episode-ish
+                        (text == "مشاهدة" && (link.contains("episode", true) || link.contains("الحلقة", true)))
 
             if (!looksLikeEpisode) return@forEach
 
@@ -679,19 +688,22 @@ class WeCimaProvider : MainAPI() {
 
         finals.take(160).forEach { link ->
             val ok = withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
-                if (isDirectMedia(link)) {
+                // ✅ START OF CHANGE
+                val l = link.lowercase()
+                if (l.contains(".mp4") || l.contains(".m3u8")) {
                     val el = newExtractorLink(
-                        source = name,
-                        name = "WeCima Direct",
-                        url = link,
-                        referer = pageUrl,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = link.lowercase().contains(".m3u8"),
-                        headers = directHeaders
+                        name,
+                        "WeCima Direct",
+                        link,
+                        pageUrl,
+                        Qualities.Unknown.value,
+                        l.contains(".m3u8"),
+                        directHeaders
                     )
                     safeCallback(el)
                     return@withTimeoutOrNull true
                 }
+                // ✅ END OF CHANGE
 
                 // ✅ IMPORTANT: do NOT call loadExtractor on internal
                 if (!isInternalUrl(link)) {
