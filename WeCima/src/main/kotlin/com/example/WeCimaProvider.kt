@@ -812,11 +812,11 @@ class WeCimaProvider : MainAPI() {
         doc.extractDownloadServers().forEach { candidates.add(it) }
 
         // data-watch expansion seeds
-        doc.select("[data-watch]")
-            .mapNotNull { it.attr("data-watch")?.trim() }
-            .filter { it.isNotBlank() }
-            .take(55)
-            .forEach { candidates.add(canonicalUrl(it)) }
+        doc.select("[data-watch]").asSequence()
+    .map { it.attr("data-watch").trim() }
+    .filter { it.isNotBlank() }
+    .take(55)
+    .forEach { candidates.add(canonicalUrl(it)) }
 
         if (candidates.isEmpty()) return false
 
