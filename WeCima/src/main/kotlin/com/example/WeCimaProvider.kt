@@ -574,15 +574,15 @@ class WeCimaProvider : MainAPI() {
 
             val ok = withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
                 if (l.contains(".mp4") || l.contains(".m3u8")) {
-                    val isM3u8 = l.contains(".m3u8")
-                    val el = ExtractorLink(
+                    val el = newExtractorLink(
                         source = name,
                         name = "WeCima Direct",
-                        url = link,
-                        referer = pageUrl,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = isM3u8
-                    )
+                        url = link
+                    ) {
+                        this.referer = pageUrl
+                        this.quality = Qualities.Unknown.value
+                        this.isM3u8 = l.contains(".m3u8")
+                    }
                     safeCallback(el)
                     return@withTimeoutOrNull true
                 }
