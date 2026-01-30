@@ -51,11 +51,14 @@ class WeCimaProvider : MainAPI() {
     private val PER_CANDIDATE_TIMEOUT_MS = 5500L
 
     override val mainPage = mainPageOf(
-        "$mainUrl/movies" to "أحدث الأفلام",
-        "$mainUrl/series" to "أحدث المسلسلات",
-        "$mainUrl/trending" to "الأكثر مشاهدة",
+        "$mainUrl/" to "أضيف حديثاً",
+        "$mainUrl/movies" to "أفلام",
+        "$mainUrl/series" to "مسلسلات",
+        "$mainUrl/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D9%83%D8%B1%D8%AA%D9%88%D9%86/" to "أفلام كرتون",
+        "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D9%83%D8%B1%D8%AA%D9%88%D9%86/" to "مسلسلات كرتون",
         "$mainUrl/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D9%86%D9%85%D9%8A/" to "أفلام أنمي",
-        "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/" to "مسلسلات أنمي"
+        "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/" to "مسلسلات أنمي",
+        "$mainUrl/category/%D8%A8%D8%B1%D8%A7%D9%85%D8%AC-%D8%AA%D9%84%D9%81%D8%B2%D9%8A%D9%88%D9%86%D9%8A%D8%A9/" to "برامج تلفزيونية"
     )
 
     // ---------------------------
@@ -161,7 +164,15 @@ class WeCimaProvider : MainAPI() {
     // ---------------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val doc = app.get(request.data, headers = safeHeaders).document
+        val url = if (page > 1) {
+            // Check if URL ends with slash to build .../page/X correct
+            val base = if (request.data.endsWith("/")) request.data else "${request.data}/"
+            "${base}page/$page"
+        } else {
+            request.data
+        }
+
+        val doc = app.get(url, headers = safeHeaders).document
         val elements = doc.select(
             "div.Thumb--GridItem, div.GridItem, div.BlockItem, div.item, article, div.movie, li.item, .Thumb, .post-block, .post, .item-box"
         )
