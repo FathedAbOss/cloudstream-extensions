@@ -1,3 +1,6 @@
+// Larooza/build.gradle.kts
+// (Full file version that avoids deprecated kotlinOptions/freeCompilerArgs and uses compilerOptions DSL)
+
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 cloudstream {
@@ -8,12 +11,14 @@ cloudstream {
     tvTypes = listOf("Movie", "TvSeries", "Anime")
 }
 
-/**
- * CI FIX: do not fail build on warnings for this module
- */
 tasks.withType<KotlinCompile>().configureEach {
-    kotlinOptions {
-        allWarningsAsErrors = false
-        freeCompilerArgs = freeCompilerArgs.filterNot { it == "-Werror" }
+    compilerOptions {
+        // Do NOT fail the build on warnings in this module
+        allWarningsAsErrors.set(false)
+
+        // If some global config injects -Werror, strip it here
+        freeCompilerArgs.set(
+            freeCompilerArgs.get().filterNot { it == "-Werror" }
+        )
     }
 }
