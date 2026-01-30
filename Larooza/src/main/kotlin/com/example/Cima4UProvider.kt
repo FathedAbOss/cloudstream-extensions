@@ -25,7 +25,7 @@ class Cima4UProvider : MainAPI() {
     )
 
     // ---------------------------
-    // Safety limits (important)
+    // Safety limits
     // ---------------------------
     private val MAX_SEARCH_RESULTS = 30
     private val MAX_CRAWL_PAGES = 6
@@ -51,8 +51,8 @@ class Cima4UProvider : MainAPI() {
 
     /**
      * Canonicalize:
-     * - Keep query params (important for watch)
-     * - Drop only fragments (#...)
+     * - Keep query params
+     * - Drop only fragment (#...)
      * - fixUrl(url) ONE ARG
      */
     private fun canonical(raw: String): String {
@@ -67,7 +67,6 @@ class Cima4UProvider : MainAPI() {
         if (!u.startsWith("http")) return true
         val host = runCatching { URI(u).host?.lowercase().orEmpty() }.getOrDefault("")
         if (host.isBlank()) return true
-        // include common variations
         return host.contains("cfu") || host.contains("cima4u") || host.contains("cima") || host.contains("egybests")
     }
 
@@ -82,7 +81,7 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // MainPage endpoints (try common patterns)
+    // MainPage
     // ---------------------------
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الأحدث",
@@ -104,7 +103,7 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Card parsing (robust)
+    // Cards parsing
     // ---------------------------
     private fun selectCardElements(doc: Document) =
         doc.select(
@@ -125,7 +124,6 @@ class Cima4UProvider : MainAPI() {
     }
 
     private fun Element.extractPosterFromCard(): String? {
-        // background-image
         val bgEl = this.selectFirst("[style*=background-image]") ?: this
         val style = bgEl.attr("style")
         if (style.contains("background-image")) {
@@ -200,7 +198,6 @@ class Cima4UProvider : MainAPI() {
                 if (out.size >= 120) break
             }
         } else {
-            // fallback: anchors (when layout is simple)
             for (a in doc.select("a[href]")) {
                 val href = a.attr("href").trim()
                 if (href.isBlank()) continue
@@ -224,7 +221,7 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Search (try several endpoints + crawl fallback)
+    // Search
     // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim()
@@ -280,6 +277,7 @@ class Cima4UProvider : MainAPI() {
                 p++
             }
         }
+
         return out.values.toList()
     }
 
@@ -366,7 +364,7 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Stream discovery (StreamPlay-ish)
+    // Discovery (StreamPlay-ish)
     // ---------------------------
     private fun Document.extractDirectMediaFromScripts(): List<String> {
         val out = LinkedHashSet<String>()
@@ -384,13 +382,11 @@ class Cima4UProvider : MainAPI() {
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // data-watch
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(canonical(s))
         }
 
-        // common data attrs
         val attrs = listOf("data-url", "data-href", "data-embed", "data-src", "data-link", "data-iframe")
         for (a in attrs) {
             this.select("[$a]").forEach {
@@ -399,20 +395,17 @@ class Cima4UProvider : MainAPI() {
             }
         }
 
-        // iframe
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(canonical(s))
         }
 
-        // onclick url
         this.select("[onclick]").forEach {
             val oc = it.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
             if (m != null) out.add(canonical(m.value))
         }
 
-        // anchors (smart filter)
         this.select("a[href]").forEach { a ->
             val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
             if (href.isBlank()) return@forEach
@@ -430,7 +423,6 @@ class Cima4UProvider : MainAPI() {
         return out.toList()
     }
 
-    // slp_watch decode (URL-safe base64)
     private fun extractSlpWatchParam(url: String): String? {
         val u = url.trim()
         if (!u.contains("slp_watch=")) return null
@@ -463,15 +455,17 @@ class Cima4UProvider : MainAPI() {
                 out.addAll(doc.extractServersFast())
                 doc.extractDirectMediaFromScripts().forEach { out.add(it) }
 
-                // expand slp_watch from data-watch too
                 var dwCount = 0
                 doc.select("[data-watch]").forEach {
                     if (dwCount >= 6) return@forEach
                     dwCount++
+
                     val dw = it.attr("data-watch").trim()
                     if (dw.isBlank()) return@forEach
+
                     val cand = canonical(dw)
                     out.add(cand)
+
                     val slp = extractSlpWatchParam(cand)
                     val decoded = slp?.let { decodeSlpWatchUrl(it) }
                     if (!decoded.isNullOrBlank()) out.add(decoded)
@@ -482,21 +476,22 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    // Direct link emitter
+    // ✅ FIXED: newExtractorLink signature (type + initializer)
     private suspend fun emitDirect(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         val isM3u8 = url.lowercase().contains(".m3u8")
-        callback(
-            newExtractorLink(
-                name,
-                "Cima4U Direct",
-                url,
-                referer,
-                Qualities.Unknown.value,
-                isM3u8,
-                headersOf(referer),
-                null
-            )
-        )
+
+        val link = newExtractorLink(
+            source = name,
+            name = "Cima4U Direct",
+            url = url,
+            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        ) {
+            this.referer = referer
+            this.quality = Qualities.Unknown.value
+            this.headers = headersOf(referer)
+        }
+
+        callback(link)
     }
 
     override suspend fun loadLinks(
@@ -510,11 +505,10 @@ class Cima4UProvider : MainAPI() {
 
         val doc = app.get(pageUrl, headers = headersOf("$mainUrl/")).document
 
-        // 1) Discover candidates (dedupe, ordered)
+        // 1) Discover candidates (dedupe + order)
         val candidates = LinkedHashSet<String>()
         doc.extractServersFast().forEach { candidates.add(it) }
         doc.extractDirectMediaFromScripts().forEach { candidates.add(it) }
-
         if (candidates.isEmpty()) return false
 
         // 2) Expand internal once (bounded)
@@ -563,7 +557,6 @@ class Cima4UProvider : MainAPI() {
                 continue
             }
 
-            // external only -> extractor
             if (!isInternalUrl(u)) {
                 runCatching {
                     loadExtractor(u, pageUrl, subtitleCallback, callback)
