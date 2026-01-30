@@ -528,6 +528,22 @@ class WeCimaProvider : MainAPI() {
     // loadLinks (StreamPlay style: discover -> expand -> resolve -> extract)
     // ---------------------------
 
+    private fun directLink(u: String, pageUrl: String): ExtractorLink {
+        val low = u.lowercase()
+        val type = if (low.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        val headers = mapOf("User-Agent" to USER_AGENT, "Referer" to pageUrl)
+
+        return newExtractorLink(
+            name,
+            "WeCima Direct",
+            u,
+            pageUrl,
+            Qualities.Unknown.value,
+            type,
+            headers
+        )
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -571,7 +587,6 @@ class WeCimaProvider : MainAPI() {
 
         // 4) Emit: direct media + loadExtractor للروابط الخارجية فقط
         var foundAny = false
-        val directHeaders = mapOf("User-Agent" to USER_AGENT, "Referer" to pageUrl)
 
         for (link in finals) {
             val u = canonicalUrl(link)
@@ -579,16 +594,7 @@ class WeCimaProvider : MainAPI() {
 
             // mp4/m3u8 direct
             if (low.contains(".mp4") || low.contains(".m3u8")) {
-                val el = newExtractorLink(
-                    source = name,
-                    name = "WeCima Direct",
-                    url = u,
-                    referer = pageUrl,
-                    quality = Qualities.Unknown.value,
-                    isM3u8 = low.contains(".m3u8"),
-                    headers = directHeaders
-                )
-                callback(el)
+                callback(directLink(u, pageUrl))
                 foundAny = true
                 continue
             }
