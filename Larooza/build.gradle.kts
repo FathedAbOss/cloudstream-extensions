@@ -20,16 +20,12 @@ android {
 }
 
 tasks.withType<KotlinCompile>().configureEach {
-    // Kotlin 2.x: kotlinOptions DSL is not allowed -> use compilerOptions DSL
     compilerOptions {
-        // keep warnings as warnings (not errors)
         allWarningsAsErrors.set(false)
 
-        // remove -Werror if some upstream adds it
         val current = freeCompilerArgs.getOrElse(emptyList())
         freeCompilerArgs.set(current.filterNot { it == "-Werror" })
 
-        // keep JVM target consistent with repo (works fine for CS extensions)
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
