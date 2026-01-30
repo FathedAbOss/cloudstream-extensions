@@ -482,7 +482,7 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    // Direct link emitter (most compatible)
+    // Direct link emitter
     private suspend fun emitDirect(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         val isM3u8 = url.lowercase().contains(".m3u8")
         callback(
