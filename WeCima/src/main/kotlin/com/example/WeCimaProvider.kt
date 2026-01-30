@@ -13,7 +13,6 @@ import kotlin.math.min
 
 class WeCimaProvider : MainAPI() {
 
-    // Domäner byts ofta; wecima.date verkar aktiv just nu.
     override var mainUrl = "https://wecima.date"
     override var name = "WeCima"
     override var lang = "ar"
@@ -39,13 +38,13 @@ class WeCimaProvider : MainAPI() {
 
     private val posterCache = LinkedHashMap<String, String?>()
 
-    // Interna hosts (för att undvika "contains wecima" som kan ge falska träffar)
+    // interna hosts (för att undvika "contains wecima" false positives)
     private val internalHostSuffixes = setOf(
         "wecima.date",
         "wecima.show",
         "wecima.click",
         "wecimma.com",
-        "mycima",     // ibland dyker bland-domäner upp
+        "mycima",
         "wca.cam",
         "wecema.media"
     )
@@ -155,6 +154,7 @@ class WeCimaProvider : MainAPI() {
         return internalHostSuffixes.any { suf -> host.endsWith(suf) }
     }
 
+    @Suppress("unused")
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
         if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
 
@@ -253,11 +253,7 @@ class WeCimaProvider : MainAPI() {
         for (section in sections) {
             var page = 1
             while (page <= MAX_CRAWL_PAGES_PER_SECTION && out.size < MAX_SEARCH_RESULTS) {
-                // WeCima layouts varierar: page/x eller ?page=x
-                val pageUrl = when {
-                    page == 1 -> section
-                    else -> "$section/page/$page"
-                }
+                val pageUrl = if (page == 1) section else "$section/page/$page"
 
                 val doc = runCatching { app.get(pageUrl, headers = safeHeaders).document }.getOrNull() ?: break
                 val cards = parseCards(doc)
@@ -278,7 +274,7 @@ class WeCimaProvider : MainAPI() {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
 
-        val encPlus = q.trim().replace(" ", "+")
+        val encPlus = q.replace(" ", "+")
         val enc = URLEncoder.encode(q, "UTF-8")
 
         val strategies = listOf(
@@ -288,7 +284,6 @@ class WeCimaProvider : MainAPI() {
             "$mainUrl/search.php?q=$enc"
         )
 
-        // Snabba försök
         for (u in strategies) {
             val doc = runCatching { app.get(u, headers = safeHeaders).document }.getOrNull() ?: continue
             val parsed = parseCards(doc)
@@ -296,7 +291,6 @@ class WeCimaProvider : MainAPI() {
             if (filtered.isNotEmpty()) return filtered
         }
 
-        // Fallback crawl
         return crawlSearchFallback(q)
     }
 
@@ -321,10 +315,12 @@ class WeCimaProvider : MainAPI() {
 
     private fun Document.extractServersFast(): List<String> {
         val out = LinkedHashSet<String>()
+
         this.select("[data-watch]").forEach {
             val s = it.attr("data-watch").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
+
         val attrs = listOf("data-url", "data-href", "data-embed", "data-src", "data-link", "data-iframe")
         for (a in attrs) {
             this.select("[$a]").forEach {
@@ -332,32 +328,37 @@ class WeCimaProvider : MainAPI() {
                 if (s.isNotBlank()) out.add(fixUrl(s))
             }
         }
+
         this.select("iframe[src]").forEach {
             val s = it.attr("src").trim()
             if (s.isNotBlank()) out.add(fixUrl(s))
         }
+
         // anchors: viktigt för WeCima ibland
         this.select("a[href]").forEach { a ->
-            val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
+            val hrefRaw = a.attr("href").trim()
+            val href = a.absUrl("href").ifBlank { fixUrl(hrefRaw) }
             val h = href.lowercase()
             val ok = listOf("watch", "play", "download", "embed", "player", "go", "مشاهدة").any { h.contains(it) }
             if (ok && href.isNotBlank()) out.add(fixUrl(href))
         }
+
         this.select("[onclick]").forEach {
             val oc = it.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
             if (m != null) out.add(fixUrl(m.value))
         }
+
         return out.toList()
     }
 
     private fun extractSlpWatchParam(url: String): String? {
         val u = url.trim()
         if (!u.contains("slp_watch=")) return null
-        return try {
+        return runCatching {
             val q = u.substringAfter("slp_watch=", "")
             if (q.isBlank()) null else q.substringBefore("&").trim()
-        } catch (_: Throwable) { null }
+        }.getOrNull()
     }
 
     private fun decodeSlpWatchUrl(encoded: String): String? {
@@ -367,11 +368,11 @@ class WeCimaProvider : MainAPI() {
             val mod = s.length % 4
             if (mod == 0) s else s + "=".repeat(4 - mod)
         }
-        return try {
+        return runCatching {
             val bytes = Base64.getDecoder().decode(normalized)
             val decoded = String(bytes, Charsets.UTF_8).trim()
             if (decoded.startsWith("http")) decoded else null
-        } catch (_: Throwable) { null }
+        }.getOrNull()
     }
 
     private suspend fun expandDataWatchLink(dataWatchUrl: String, referer: String): List<String> {
@@ -390,6 +391,7 @@ class WeCimaProvider : MainAPI() {
             doc.extractServersFast().forEach { out.add(it) }
             doc.extractDirectMediaFromScripts().forEach { out.add(it) }
         }
+
         return out.toList()
     }
 
@@ -397,12 +399,15 @@ class WeCimaProvider : MainAPI() {
         val fixed = fixUrl(link).trim()
         if (fixed.isBlank()) return emptyList()
 
-        // Endast intern parse om intern host
         if (!isInternalUrl(fixed)) return listOf(fixed)
 
-        // Bara om det ser ut som gateway/watch/player/play
         val low = fixed.lowercase()
-        val shouldResolve = (low.contains("watch") || low.contains("player") || low.contains("play") || low.contains("مشاهدة") || low.contains("download"))
+        val shouldResolve = low.contains("watch") ||
+                low.contains("player") ||
+                low.contains("play") ||
+                low.contains("مشاهدة") ||
+                low.contains("download")
+
         if (!shouldResolve) return listOf(fixed)
 
         return runCatching {
@@ -414,13 +419,19 @@ class WeCimaProvider : MainAPI() {
         }.getOrElse { listOf(fixed) }
     }
 
+    // ---------------------------
+    // Load
+    // ---------------------------
+
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url, headers = safeHeaders).document
         val title = doc.selectFirst("h1")?.text()?.trim()
             ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
             ?: "WeCima"
+
         val poster = doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
             ?: doc.selectFirst("img[src]")?.attr("src")?.trim()
+
         val plot = doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
         val type = guessTypeFrom(url, title)
 
@@ -432,6 +443,7 @@ class WeCimaProvider : MainAPI() {
                 this.plot = plot
             }
         }
+
         return newMovieLoadResponse(title, url, type, url) {
             this.posterUrl = fixUrlNull(poster)
             this.posterHeaders = this@WeCimaProvider.posterHeaders
@@ -444,6 +456,7 @@ class WeCimaProvider : MainAPI() {
         val candidates = this.select(
             "a[href*=%D8%A7%D9%84%D8%AD%D9%84%D9%82%D8%A9],a:contains(الحلقة),a:contains(مشاهدة),a[href*=/episode],a[href*=/episodes],a[href*=%D9%85%D8%B4%D8%A7%D9%87%D8%AF%D8%A9-%D9%85%D8%B3%D9%84%D8%B3%D9%84]"
         )
+
         candidates.forEach { a ->
             val href = a.attr("href").trim()
             if (href.isNotBlank()) {
@@ -453,6 +466,7 @@ class WeCimaProvider : MainAPI() {
                     val epNum = Regex("""الحلقة\s*(\d{1,4})""").find(rawName)?.groupValues?.getOrNull(1)?.toIntOrNull()
                         ?: Regex("""[-/](\d{1,4})(?:/)?$""").find(link)?.groupValues?.getOrNull(1)?.toIntOrNull()
                         ?: Regex("""(\d{1,4})""").findAll(rawName).mapNotNull { it.value.toIntOrNull() }.lastOrNull()
+
                     val ep = newEpisode(link) {
                         this.name = rawName
                         this.season = 1
@@ -462,6 +476,7 @@ class WeCimaProvider : MainAPI() {
                 }
             }
         }
+
         val list = found.values.toList()
         if (list.isEmpty()) {
             return listOf(newEpisode(seriesUrl) {
@@ -470,8 +485,13 @@ class WeCimaProvider : MainAPI() {
                 this.episode = 1
             })
         }
+
         return list.sortedWith(compareBy<Episode> { it.episode ?: 999999 })
     }
+
+    // ---------------------------
+    // LoadLinks (bounded + stable-safe newExtractorLink)
+    // ---------------------------
 
     override suspend fun loadLinks(
         data: String,
@@ -484,30 +504,28 @@ class WeCimaProvider : MainAPI() {
 
         val doc = app.get(pageUrl, headers = safeHeaders).document
 
-        // Wrapper så vi bara returnerar true om vi faktiskt EMITTAR länkar
         var foundAny = false
         val safeCallback: (ExtractorLink) -> Unit = { link ->
             foundAny = true
             callback(link)
         }
 
-        // 1) Aggregera kandidater först (dedupe + order)
+        // 1) aggregera kandidater
         val candidates = LinkedHashSet<String>()
 
-        // data-watch raw
-        doc.select("[data-watch]").mapNotNull { it.attr("data-watch")?.trim() }
+        doc.select("[data-watch]")
+            .mapNotNull { it.attr("data-watch")?.trim() }
             .filter { it.isNotBlank() }
             .take(25)
             .forEach { candidates.add(fixUrl(it)) }
 
-        // snabba extractions
         doc.extractServersFast().forEach { candidates.add(it) }
         doc.extractDirectMediaFromScripts().forEach { candidates.add(it) }
 
-        // Om tomt: retry med minimal headers
         if (candidates.isEmpty()) {
             val retryDoc = app.get(pageUrl, headers = mapOf("User-Agent" to USER_AGENT, "Referer" to "$mainUrl/")).document
-            retryDoc.select("[data-watch]").mapNotNull { it.attr("data-watch")?.trim() }
+            retryDoc.select("[data-watch]")
+                .mapNotNull { it.attr("data-watch")?.trim() }
                 .filter { it.isNotBlank() }
                 .take(25)
                 .forEach { candidates.add(fixUrl(it)) }
@@ -518,7 +536,7 @@ class WeCimaProvider : MainAPI() {
 
         if (candidates.isEmpty()) return false
 
-        // 2) Expand data-watch försiktigt (bounded)
+        // 2) expand data-watch bounded
         val expanded = LinkedHashSet<String>()
         var expandedCount = 0
         for (c in candidates) {
@@ -530,7 +548,7 @@ class WeCimaProvider : MainAPI() {
         }
         expanded.forEach { candidates.add(it) }
 
-        // 3) Resolva internt max 1 steg + dedupe final
+        // 3) resolve bounded
         val finals = LinkedHashSet<String>()
         var internalCount = 0
 
@@ -543,13 +561,11 @@ class WeCimaProvider : MainAPI() {
             val done = withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
                 val low = cand.lowercase()
 
-                // Direkt media
                 if (low.contains(".mp4") || low.contains(".m3u8")) {
                     finals.add(cand)
                     return@withTimeoutOrNull true
                 }
 
-                // Intern resolve (bounded)
                 if (isInternalUrl(cand)) {
                     if (internalCount >= MAX_INTERNAL_RESOLVE) return@withTimeoutOrNull true
                     internalCount++
@@ -557,37 +573,31 @@ class WeCimaProvider : MainAPI() {
                     return@withTimeoutOrNull true
                 }
 
-                // Extern kandidat -> lägg till som final direkt (loadExtractor sen)
                 finals.add(cand)
                 true
             }
 
-            // timeout -> bara fortsätt
             if (done == null) continue
         }
 
         if (finals.isEmpty()) return false
 
-        // 4) Emit länkar: direct media manuellt, annars loadExtractor på EXTERNA hosts
+        // 4) emit: direct media via newExtractorLink (NO builder assigns), annars loadExtractor på externa
         finals.take(120).forEach { link ->
             val l = link.lowercase()
 
             val ok = withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
                 if (l.contains(".mp4") || l.contains(".m3u8")) {
+                    // Stable-safe: bara minsta signaturen, inga "this.x =" i builder
                     val el = newExtractorLink(
                         source = name,
                         name = "WeCima Direct",
                         url = link
-                    ) {
-                        this.referer = pageUrl
-                        this.quality = Qualities.Unknown.value
-                        this.isM3u8 = l.contains(".m3u8")
-                    }
+                    )
                     safeCallback(el)
                     return@withTimeoutOrNull true
                 }
 
-                // IMPORTANT: loadExtractor bara på EXTERNA
                 if (!isInternalUrl(link)) {
                     loadExtractor(link, pageUrl, subtitleCallback, safeCallback)
                 }
