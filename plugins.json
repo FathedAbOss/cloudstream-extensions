@@ -135,7 +135,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 13224,
+        "fileSize": 30984,
         "status": 1,
         "language": "ar",
         "authors": [
@@ -143,11 +143,12 @@
         ],
         "tvTypes": [
             "Movie",
-            "TvSeries"
+            "TvSeries",
+            "Anime"
         ],
         "version": 1,
         "internalName": "Larooza",
-        "description": "Larooza provider",
+        "description": "Cima4U provider",
         "url": "https://raw.githubusercontent.com/FathedAbOss/cloudstream-extensions/builds/Larooza.cs3",
         "name": "Larooza"
     },
@@ -173,7 +174,7 @@
     {
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/FathedAbOss/cloudstream-extensions",
-        "fileSize": 34593,
+        "fileSize": 39984,
         "status": 1,
         "language": "ar",
         "authors": [
