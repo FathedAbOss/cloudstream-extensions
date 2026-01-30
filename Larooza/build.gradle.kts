@@ -1,6 +1,3 @@
-// Larooza/build.gradle.kts
-// (Full file version that avoids deprecated kotlinOptions/freeCompilerArgs and uses compilerOptions DSL)
-
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 cloudstream {
