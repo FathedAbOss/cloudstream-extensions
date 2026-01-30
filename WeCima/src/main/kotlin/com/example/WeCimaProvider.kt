@@ -684,26 +684,30 @@ class WeCimaProvider : MainAPI() {
         if (finals.isEmpty()) return false
 
         // 5) EMIT: direct media with headers+referer, external -> loadExtractor ONLY
-        val directHeaders = mapOf("User-Agent" to USER_AGENT, "Referer" to pageUrl)
-
         finals.take(160).forEach { link ->
             val ok = withTimeoutOrNull(PER_CANDIDATE_TIMEOUT_MS) {
-                // ✅ START OF CHANGE
+                // ✅ UPDATED BLOCK
                 val l = link.lowercase()
                 if (l.contains(".mp4") || l.contains(".m3u8")) {
+                    val type = if (l.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
                     val el = newExtractorLink(
                         name,
                         "WeCima Direct",
                         link,
-                        pageUrl,
-                        Qualities.Unknown.value,
-                        l.contains(".m3u8"),
-                        directHeaders
-                    )
+                        type
+                    ) {
+                        this.referer = pageUrl
+                        this.quality = Qualities.Unknown.value
+                        this.headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to pageUrl
+                        )
+                    }
+
                     safeCallback(el)
                     return@withTimeoutOrNull true
                 }
-                // ✅ END OF CHANGE
 
                 // ✅ IMPORTANT: do NOT call loadExtractor on internal
                 if (!isInternalUrl(link)) {
