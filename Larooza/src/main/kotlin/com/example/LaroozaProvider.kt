@@ -2,8 +2,12 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.nodes.Document
+import java.net.URI
 import java.net.URLEncoder
+import java.util.LinkedHashMap
+import kotlin.math.min
 
 class Cima4UProvider : MainAPI() {
 
@@ -18,20 +22,83 @@ class Cima4UProvider : MainAPI() {
         TvType.Anime
     )
 
+    // ---------------------------
+    // Safety limits
+    // ---------------------------
+    private val MAX_SEARCH_RESULTS = 30
+    private val MAX_CRAWL_PAGES = 6
+    private val MAX_CANDIDATES = 90
+    private val MAX_FINAL_LINKS = 60
+    private val MAX_INTERNAL_RESOLVE = 14
+    private val PER_REQ_TIMEOUT_MS = 6500L
+
+    // Small poster cache to reduce requests
+    private val posterCache = LinkedHashMap<String, String?>()
+
     private fun headersOf(referer: String) = mapOf(
         "User-Agent" to USER_AGENT,
         "Referer" to referer
     )
 
-    private fun canonical(u: String): String = fixUrl(u.trim(), mainUrl).substringBefore("#").trim()
+    private fun posterHeaders() = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Referer" to "$mainUrl/",
+        "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
+    )
 
-    // -----------------------
+    /**
+     * Canonicalize:
+     * - Use Cloudstream's MainAPI.fixUrl(url) (ONE ARG) -> no build conflict
+     * - Keep query params
+     * - Drop only fragment (#...)
+     */
+    private fun canonical(raw: String): String {
+        val u = raw.trim()
+        if (u.isBlank()) return u
+        return fixUrl(u).substringBefore("#").trim()
+    }
+
+    private fun isInternalUrl(u: String): Boolean {
+        if (!u.startsWith("http")) return true
+        val host = runCatching { URI(u).host?.lowercase().orEmpty() }.getOrDefault("")
+        if (host.isBlank()) return true
+        return host.contains("cfu") || host.contains("cima4u") || host.contains("egybests")
+    }
+
+    private fun guessType(title: String, url: String): TvType {
+        val t = title.lowercase()
+        val u = url.lowercase()
+        if (t.contains("مسلسل") || t.contains("الحلقة") || t.contains("موسم") || u.contains("series"))
+            return TvType.TvSeries
+        if (t.contains("انمي") || u.contains("انمي"))
+            return TvType.Anime
+        return TvType.Movie
+    }
+
+    private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
+        if (posterCache.containsKey(detailsUrl)) return posterCache[detailsUrl]
+        val result = withTimeoutOrNull(4500L) {
+            runCatching {
+                val d = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
+                d.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { canonical(it) }
+            }.getOrNull()
+        }
+        if (posterCache.size > 250) posterCache.remove(posterCache.keys.firstOrNull())
+        posterCache[detailsUrl] = result
+        return result
+    }
+
+    // ---------------------------
     // MainPage
-    // -----------------------
+    // ---------------------------
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الأحدث",
         "$mainUrl/category/movies/" to "أفلام",
-        "$mainUrl/category/series/" to "مسلسلات"
+        "$mainUrl/category/series/" to "مسلسلات",
+        "$mainUrl/category/%D8%A7%D9%81%D9%84%D8%A7%D9%85-%D8%A7%D9%86%D9%85%D9%8A/" to "أفلام أنمي",
+        "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/" to "مسلسلات أنمي"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -40,27 +107,104 @@ class Cima4UProvider : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
-    // -----------------------
+    // ---------------------------
+    // Listing parser (simple + robust)
+    // ---------------------------
+    private suspend fun parseListing(doc: Document): List<SearchResponse> {
+        val out = LinkedHashMap<String, SearchResponse>()
+        val ph = posterHeaders()
+
+        // CFU pages often contain many relevant "مشاهدة ..." links as plain anchors
+        // We'll keep internal post links and dedupe by URL.
+        val anchors = doc.select("a[href]")
+        var ogCount = 0
+
+        for (a in anchors) {
+            val href = a.attr("href").trim()
+            if (href.isBlank()) continue
+
+            val url = canonical(href)
+            if (!isInternalUrl(url)) continue
+            if (url.contains("/watch", ignoreCase = true)) continue
+
+            val title = a.text().trim()
+            if (title.length < 5) continue
+            if (!title.contains("مشاهدة")) continue
+
+            val type = guessType(title, url)
+
+            // optional poster via OG (bounded)
+            var poster: String? = null
+            if (ogCount < 18) {
+                ogCount++
+                poster = fetchOgPosterCached(url)
+            }
+
+            val sr = newMovieSearchResponse(title, url, type) {
+                posterUrl = fixUrlNull(poster)
+                posterHeaders = ph
+            }
+
+            out.putIfAbsent(url, sr)
+            if (out.size >= 80) break
+        }
+
+        return out.values.toList()
+    }
+
+    // ---------------------------
     // Search
-    // -----------------------
+    // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
 
         val enc = URLEncoder.encode(q, "UTF-8")
-        val url = "$mainUrl/?s=$enc"
 
-        val doc = app.get(url, headers = headersOf("$mainUrl/")).document
-        val results = parseListing(doc)
-        if (results.isNotEmpty()) return results
+        val urls = listOf(
+            "$mainUrl/?s=$enc",
+            "$mainUrl/search/$enc"
+        )
 
-        // fallback: just return empty (you can later add crawl fallback like WeCima)
-        return emptyList()
+        for (u in urls) {
+            val doc = runCatching { app.get(u, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: continue
+            val parsed = parseListing(doc)
+            val filtered = parsed.filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
+            if (filtered.isNotEmpty()) return filtered
+        }
+
+        // Fallback crawl: movies + series category pages
+        return crawlSearchFallback(q)
     }
 
-    // -----------------------
+    private suspend fun crawlSearchFallback(q: String): List<SearchResponse> {
+        val out = LinkedHashMap<String, SearchResponse>()
+        val sections = listOf(
+            "$mainUrl/category/movies/",
+            "$mainUrl/category/series/"
+        )
+
+        for (section in sections) {
+            var p = 1
+            while (p <= MAX_CRAWL_PAGES && out.size < MAX_SEARCH_RESULTS) {
+                val pageUrl = if (p == 1) section else "${section}page/$p/"
+                val doc = runCatching { app.get(pageUrl, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: break
+                val items = parseListing(doc)
+                if (items.isEmpty()) break
+
+                for (it in items) {
+                    if (it.name.contains(q, ignoreCase = true)) out.putIfAbsent(it.url, it)
+                    if (out.size >= MAX_SEARCH_RESULTS) break
+                }
+                p++
+            }
+        }
+        return out.values.toList()
+    }
+
+    // ---------------------------
     // Load (details)
-    // -----------------------
+    // ---------------------------
     override suspend fun load(url: String): LoadResponse {
         val pageUrl = canonical(url)
         val doc = app.get(pageUrl, headers = headersOf("$mainUrl/")).document
@@ -78,24 +222,169 @@ class Cima4UProvider : MainAPI() {
             doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
         val type = guessType(title, pageUrl)
+        val ph = posterHeaders()
 
         return if (type == TvType.TvSeries) {
             val episodes = doc.extractEpisodesSimple(pageUrl)
             newTvSeriesLoadResponse(title, pageUrl, TvType.TvSeries, episodes) {
                 posterUrl = fixUrlNull(poster?.let { canonical(it) })
+                posterHeaders = ph
                 this.plot = plot
             }
         } else {
             newMovieLoadResponse(title, pageUrl, type, pageUrl) {
                 posterUrl = fixUrlNull(poster?.let { canonical(it) })
+                posterHeaders = ph
                 this.plot = plot
             }
         }
     }
 
-    // -----------------------
-    // loadLinks (details -> watch -> external hosts)
-    // -----------------------
+    /**
+     * Simple episode extraction:
+     * - looks for links that contain "الحلقة"
+     * - if nothing found, returns a single "مشاهدة" episode
+     *
+     * You can refine later if CFU uses season pages/tabs.
+     */
+    private fun Document.extractEpisodesSimple(seriesUrl: String): List<Episode> {
+        val found = LinkedHashMap<String, Episode>()
+        val epRegex = Regex("""الحلقة\s*(\d{1,4})""")
+
+        select("a[href]").forEach { a ->
+            val href = a.attr("href").trim()
+            if (href.isBlank()) return@forEach
+
+            val link = canonical(href)
+            if (!isInternalUrl(link)) return@forEach
+            if (link == seriesUrl) return@forEach
+
+            val txt = a.text().trim()
+            val looksEpisode = txt.contains("الحلقة") || link.contains("الحلقة")
+            if (!looksEpisode) return@forEach
+
+            val epNum = epRegex.find(txt)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+            found.putIfAbsent(link, newEpisode(link) {
+                name = if (epNum != null) "الحلقة $epNum" else txt.ifBlank { "مشاهدة" }
+                season = 1
+                episode = epNum
+            })
+        }
+
+        if (found.isEmpty()) {
+            return listOf(newEpisode(seriesUrl) {
+                name = "مشاهدة"
+                season = 1
+                episode = 1
+            })
+        }
+
+        return found.values.toList().sortedBy { it.episode ?: 999999 }
+    }
+
+    // ---------------------------
+    // Link discovery (details -> watch -> external hosts)
+    // ---------------------------
+
+    private fun Document.findWatchUrl(detailsUrl: String): String? {
+        // Most reliable:
+        // - anchor that contains "مشاهدة الآن"
+        // - any href containing "/watch"
+        val a = selectFirst("a:contains(مشاهدة الآن), a[href*=/watch]")
+        val href = a?.attr("href")?.trim().orEmpty()
+        if (href.isNotBlank()) return canonical(href)
+
+        // fallback pattern
+        val clean = if (detailsUrl.endsWith("/")) detailsUrl else "$detailsUrl/"
+        return "${clean}watch/"
+    }
+
+    private fun Document.extractServerCandidates(): List<String> {
+        val out = LinkedHashSet<String>()
+
+        // 1) external anchors (download servers typically are direct external URLs on watch page)
+        select("a[href]").forEach { a ->
+            val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
+            if (href.isBlank()) return@forEach
+            val u = href.substringBefore("#").trim()
+
+            // Keep only likely useful links (external hosts or embed/player)
+            val low = u.lowercase()
+            val looksUseful =
+                low.contains("dood") ||
+                low.contains("filemoon") ||
+                low.contains("mixdrop") ||
+                low.contains("streamtape") ||
+                low.contains("ok.ru") ||
+                low.contains("uqload") ||
+                low.contains("embed") ||
+                low.contains("player") ||
+                low.contains("m3u8") ||
+                low.contains(".mp4")
+
+            if (looksUseful) out.add(u)
+        }
+
+        // 2) data-watch and common data-* embed attrs
+        select("[data-watch]").forEach {
+            val v = it.attr("data-watch").trim()
+            if (v.isNotBlank()) out.add(canonical(v))
+        }
+
+        val attrs = listOf("data-url", "data-href", "data-embed", "data-src", "data-link", "data-iframe")
+        for (a in attrs) {
+            select("[$a]").forEach { el ->
+                val v = el.attr(a).trim()
+                if (v.isNotBlank()) out.add(canonical(v))
+            }
+        }
+
+        // 3) iframe src
+        select("iframe[src]").forEach {
+            val v = it.attr("src").trim()
+            if (v.isNotBlank()) out.add(canonical(v))
+        }
+
+        // 4) onclick url
+        select("[onclick]").forEach { el ->
+            val oc = el.attr("onclick")
+            val m = Regex("""https?://[^"'\s<>]+""").find(oc)
+            if (m != null) out.add(m.value.substringBefore("#").trim())
+        }
+
+        return out.toList()
+    }
+
+    private suspend fun resolveInternalOnce(url: String, referer: String): List<String> {
+        val fixed = canonical(url)
+        if (fixed.isBlank()) return emptyList()
+
+        return withTimeoutOrNull(PER_REQ_TIMEOUT_MS) {
+            runCatching {
+                val doc = app.get(fixed, headers = headersOf(referer)).document
+                doc.extractServerCandidates()
+            }.getOrElse { emptyList() }
+        } ?: emptyList()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
+        val low = url.lowercase()
+        val isM3u8 = low.contains(".m3u8")
+        callback(
+            ExtractorLink(
+                name,
+                "Cima4U Direct",
+                url,
+                pageUrl,
+                Qualities.Unknown.value,
+                isM3u8,
+                headersOf(pageUrl)
+            )
+        )
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -105,112 +394,63 @@ class Cima4UProvider : MainAPI() {
         val detailsUrl = canonical(data)
         if (detailsUrl.isBlank()) return false
 
+        // 1) details page -> watch page
         val detailsDoc = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
-
-        // Find watch link reliably (don’t guess patterns)
-        val watchHref = detailsDoc.selectFirst(
-            "a:contains(مشاهدة الآن), a[href*=/watch]"
-        )?.attr("href")?.trim()
-
-        val watchUrl = watchHref?.let { canonical(it) }
-            ?: run {
-                val clean = if (detailsUrl.endsWith("/")) detailsUrl else "$detailsUrl/"
-                "${clean}watch/"
-            }
+        val watchUrl = detailsDoc.findWatchUrl(detailsUrl) ?: return false
 
         val watchDoc = app.get(watchUrl, headers = headersOf(detailsUrl)).document
 
-        // Collect external hosts (download servers are usually direct anchors on watch page)
+        // 2) Discover candidates (dedupe + keep order)
         val candidates = LinkedHashSet<String>()
-        watchDoc.select("a[href]").forEach { a ->
-            val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
-            if (href.isBlank()) return@forEach
-            val u = href.substringBefore("#").trim()
-            val isExternal = u.startsWith("http") && !u.contains("cfu.cam")
-            if (isExternal) candidates.add(u)
-        }
+        watchDoc.extractServerCandidates().forEach { candidates.add(it) }
 
         if (candidates.isEmpty()) return false
 
-        var foundAny = false
-        for (u in candidates) {
-            try {
-                loadExtractor(u, watchUrl, subtitleCallback, callback)
-                foundAny = true
-            } catch (_: Throwable) {
-                // ignore per-host failures
+        // 3) Expand internal once (bounded)
+        val expanded = LinkedHashSet<String>()
+        expanded.addAll(candidates)
+
+        var internalUsed = 0
+        for (c in candidates.toList().take(min(candidates.size, MAX_CANDIDATES))) {
+            if (internalUsed >= MAX_INTERNAL_RESOLVE) break
+            val u = canonical(c)
+            if (u.isBlank()) continue
+
+            if (isInternalUrl(u)) {
+                val more = resolveInternalOnce(u, watchUrl)
+                more.forEach { expanded.add(it) }
+                internalUsed++
             }
         }
+
+        // 4) Emit: direct media + external extractors
+        val finals = expanded.toList().take(MAX_FINAL_LINKS)
+        if (finals.isEmpty()) return false
+
+        var foundAny = false
+
+        for (raw in finals) {
+            val u = canonical(raw)
+            if (u.isBlank()) continue
+            val low = u.lowercase()
+
+            if (low.contains(".mp4") || low.contains(".m3u8")) {
+                emitDirect(u, watchUrl, callback)
+                foundAny = true
+                continue
+            }
+
+            // external only -> extractor
+            if (!isInternalUrl(u)) {
+                try {
+                    loadExtractor(u, watchUrl, subtitleCallback, callback)
+                    foundAny = true
+                } catch (_: Throwable) {
+                    // ignore
+                }
+            }
+        }
+
         return foundAny
-    }
-
-    // -----------------------
-    // Listing parser (simple but works on these sites)
-    // -----------------------
-    private fun parseListing(doc: Document): List<SearchResponse> {
-        val out = LinkedHashSet<SearchResponse>()
-
-        doc.select("a[href]").forEach { a ->
-            val href = a.attr("href").trim()
-            if (href.isBlank()) return@forEach
-
-            val url = canonical(href)
-            if (!url.contains("cfu.cam")) return@forEach
-            if (url.contains("/watch", ignoreCase = true)) return@forEach
-
-            val title = a.text().trim()
-            if (title.length < 5) return@forEach
-
-            // Many posts start with "مشاهدة ..."
-            if (!title.contains("مشاهدة")) return@forEach
-
-            val type = guessType(title, url)
-
-            out.add(newMovieSearchResponse(title, url, type))
-        }
-
-        return out.toList()
-    }
-
-    private fun guessType(title: String, url: String): TvType {
-        val t = title.lowercase()
-        val u = url.lowercase()
-        if (t.contains("مسلسل") || t.contains("الحلقة") || t.contains("موسم") || u.contains("series")) return TvType.TvSeries
-        if (t.contains("انمي") || u.contains("انمي")) return TvType.Anime
-        return TvType.Movie
-    }
-
-    private fun Document.extractEpisodesSimple(seriesUrl: String): List<Episode> {
-        val eps = LinkedHashMap<String, Episode>()
-        val epRegex = Regex("""الحلقة\s*(\d{1,4})""")
-
-        select("a[href]").forEach { a ->
-            val href = a.attr("href").trim()
-            if (href.isBlank()) return@forEach
-            val link = canonical(href)
-            if (!link.contains("cfu.cam")) return@forEach
-            if (link == seriesUrl) return@forEach
-
-            val txt = a.text().trim()
-            if (!txt.contains("الحلقة") && !link.contains("الحلقة")) return@forEach
-
-            val epNum = epRegex.find(txt)?.groupValues?.getOrNull(1)?.toIntOrNull()
-
-            eps.putIfAbsent(link, newEpisode(link) {
-                name = if (epNum != null) "الحلقة $epNum" else txt.ifBlank { "مشاهدة" }
-                season = 1
-                episode = epNum
-            })
-        }
-
-        if (eps.isEmpty()) {
-            return listOf(newEpisode(seriesUrl) {
-                name = "مشاهدة"
-                season = 1
-                episode = 1
-            })
-        }
-
-        return eps.values.toList().sortedBy { it.episode ?: 999999 }
     }
 }
