@@ -114,8 +114,6 @@ class Cima4UProvider : MainAPI() {
         val out = LinkedHashMap<String, SearchResponse>()
         val ph = posterHeaders()
 
-        // CFU pages often contain many relevant "مشاهدة ..." links as plain anchors
-        // We'll keep internal post links and dedupe by URL.
         val anchors = doc.select("a[href]")
         var ogCount = 0
 
@@ -133,7 +131,6 @@ class Cima4UProvider : MainAPI() {
 
             val type = guessType(title, url)
 
-            // optional poster via OG (bounded)
             var poster: String? = null
             if (ogCount < 18) {
                 ogCount++
@@ -160,7 +157,6 @@ class Cima4UProvider : MainAPI() {
         if (q.isBlank()) return emptyList()
 
         val enc = URLEncoder.encode(q, "UTF-8")
-
         val urls = listOf(
             "$mainUrl/?s=$enc",
             "$mainUrl/search/$enc"
@@ -173,7 +169,6 @@ class Cima4UProvider : MainAPI() {
             if (filtered.isNotEmpty()) return filtered
         }
 
-        // Fallback crawl: movies + series category pages
         return crawlSearchFallback(q)
     }
 
@@ -240,13 +235,6 @@ class Cima4UProvider : MainAPI() {
         }
     }
 
-    /**
-     * Simple episode extraction:
-     * - looks for links that contain "الحلقة"
-     * - if nothing found, returns a single "مشاهدة" episode
-     *
-     * You can refine later if CFU uses season pages/tabs.
-     */
     private fun Document.extractEpisodesSimple(seriesUrl: String): List<Episode> {
         val found = LinkedHashMap<String, Episode>()
         val epRegex = Regex("""الحلقة\s*(\d{1,4})""")
@@ -288,14 +276,10 @@ class Cima4UProvider : MainAPI() {
     // ---------------------------
 
     private fun Document.findWatchUrl(detailsUrl: String): String? {
-        // Most reliable:
-        // - anchor that contains "مشاهدة الآن"
-        // - any href containing "/watch"
         val a = selectFirst("a:contains(مشاهدة الآن), a[href*=/watch]")
         val href = a?.attr("href")?.trim().orEmpty()
         if (href.isNotBlank()) return canonical(href)
 
-        // fallback pattern
         val clean = if (detailsUrl.endsWith("/")) detailsUrl else "$detailsUrl/"
         return "${clean}watch/"
     }
@@ -303,30 +287,27 @@ class Cima4UProvider : MainAPI() {
     private fun Document.extractServerCandidates(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // 1) external anchors (download servers typically are direct external URLs on watch page)
         select("a[href]").forEach { a ->
             val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
             if (href.isBlank()) return@forEach
             val u = href.substringBefore("#").trim()
 
-            // Keep only likely useful links (external hosts or embed/player)
             val low = u.lowercase()
             val looksUseful =
                 low.contains("dood") ||
-                low.contains("filemoon") ||
-                low.contains("mixdrop") ||
-                low.contains("streamtape") ||
-                low.contains("ok.ru") ||
-                low.contains("uqload") ||
-                low.contains("embed") ||
-                low.contains("player") ||
-                low.contains("m3u8") ||
-                low.contains(".mp4")
+                    low.contains("filemoon") ||
+                    low.contains("mixdrop") ||
+                    low.contains("streamtape") ||
+                    low.contains("ok.ru") ||
+                    low.contains("uqload") ||
+                    low.contains("embed") ||
+                    low.contains("player") ||
+                    low.contains("m3u8") ||
+                    low.contains(".mp4")
 
             if (looksUseful) out.add(u)
         }
 
-        // 2) data-watch and common data-* embed attrs
         select("[data-watch]").forEach {
             val v = it.attr("data-watch").trim()
             if (v.isNotBlank()) out.add(canonical(v))
@@ -340,13 +321,11 @@ class Cima4UProvider : MainAPI() {
             }
         }
 
-        // 3) iframe src
         select("iframe[src]").forEach {
             val v = it.attr("src").trim()
             if (v.isNotBlank()) out.add(canonical(v))
         }
 
-        // 4) onclick url
         select("[onclick]").forEach { el ->
             val oc = el.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
@@ -368,20 +347,21 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    // ✅ UPDATED: use newExtractorLink instead of deprecated ExtractorLink constructor
+    // ✅ UPDATED AGAIN: positional args for maximum compatibility across core versions
     private suspend fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
         val low = url.lowercase()
         val isM3u8 = low.contains(".m3u8")
 
         callback(
             newExtractorLink(
-                source = name,
-                name = "Cima4U Direct",
-                url = url,
-                referer = pageUrl,
-                quality = Qualities.Unknown.value,
-                isM3u8 = isM3u8,
-                headers = headersOf(pageUrl)
+                name,                 // source
+                "Cima4U Direct",       // name
+                url,                  // url
+                pageUrl,              // referer
+                Qualities.Unknown.value,
+                isM3u8,
+                headersOf(pageUrl),
+                null                  // extractorData
             )
         )
     }
@@ -395,19 +375,16 @@ class Cima4UProvider : MainAPI() {
         val detailsUrl = canonical(data)
         if (detailsUrl.isBlank()) return false
 
-        // 1) details page -> watch page
         val detailsDoc = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
         val watchUrl = detailsDoc.findWatchUrl(detailsUrl) ?: return false
 
         val watchDoc = app.get(watchUrl, headers = headersOf(detailsUrl)).document
 
-        // 2) Discover candidates (dedupe + keep order)
         val candidates = LinkedHashSet<String>()
         watchDoc.extractServerCandidates().forEach { candidates.add(it) }
 
         if (candidates.isEmpty()) return false
 
-        // 3) Expand internal once (bounded)
         val expanded = LinkedHashSet<String>()
         expanded.addAll(candidates)
 
@@ -424,7 +401,6 @@ class Cima4UProvider : MainAPI() {
             }
         }
 
-        // 4) Emit: direct media + external extractors
         val finals = expanded.toList().take(MAX_FINAL_LINKS)
         if (finals.isEmpty()) return false
 
@@ -441,7 +417,6 @@ class Cima4UProvider : MainAPI() {
                 continue
             }
 
-            // external only -> extractor
             if (!isInternalUrl(u)) {
                 try {
                     loadExtractor(u, watchUrl, subtitleCallback, callback)
