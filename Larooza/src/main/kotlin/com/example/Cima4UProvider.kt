@@ -368,19 +368,20 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    @Suppress("DEPRECATION")
-    private fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
+    // ✅ UPDATED: use newExtractorLink instead of deprecated ExtractorLink constructor
+    private suspend fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
         val low = url.lowercase()
         val isM3u8 = low.contains(".m3u8")
+
         callback(
-            ExtractorLink(
-                name,
-                "Cima4U Direct",
-                url,
-                pageUrl,
-                Qualities.Unknown.value,
-                isM3u8,
-                headersOf(pageUrl)
+            newExtractorLink(
+                source = name,
+                name = "Cima4U Direct",
+                url = url,
+                referer = pageUrl,
+                quality = Qualities.Unknown.value,
+                isM3u8 = isM3u8,
+                headers = headersOf(pageUrl)
             )
         )
     }
