@@ -48,9 +48,9 @@ class Cima4UProvider : MainAPI() {
 
     /**
      * Canonicalize:
-     * - fixUrl(url) ONE ARG
-     * - Keep query
-     * - Drop only fragment
+     * - Use Cloudstream's MainAPI.fixUrl(url) (ONE ARG)
+     * - Keep query params
+     * - Drop only fragment (#...)
      */
     private fun canonical(raw: String): String {
         val u = raw.trim()
@@ -58,9 +58,6 @@ class Cima4UProvider : MainAPI() {
         return fixUrl(u).substringBefore("#").trim()
     }
 
-    /**
-     * ✅ FIX: host is nullable -> always convert to non-null string BEFORE lowercase/contains
-     */
     private fun isInternalUrl(u: String): Boolean {
         if (!u.startsWith("http")) return true
         val host = runCatching { (URI(u).host ?: "").lowercase() }.getOrDefault("")
@@ -132,7 +129,6 @@ class Cima4UProvider : MainAPI() {
                     ?: a.attr("title").trim().ifBlank { a.text().trim() }
 
             val title = rawTitle.ifBlank { continue }
-
             val type = guessType(title, url)
 
             var poster: String? =
@@ -363,20 +359,23 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    @Suppress("DEPRECATION")
-    private fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
+    // ✅ FIX: Use newExtractorLink with the correct signature (no deprecated constructor)
+    private suspend fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
         val low = url.lowercase()
-        val isM3u8 = low.contains(".m3u8")
+        val type = if (low.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+
         callback(
-            ExtractorLink(
+            newExtractorLink(
                 source = name,
                 name = "Cima4U Direct",
                 url = url,
-                referer = pageUrl,
-                quality = Qualities.Unknown.value,
-                isM3u8 = isM3u8,
+                type = type
+            ) {
+                // These are vars in Cloudstream cores that support newExtractorLink initializer
+                referer = pageUrl
+                quality = Qualities.Unknown.value
                 headers = headersOf(pageUrl)
-            )
+            }
         )
     }
 
