@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.withTimeoutOrNull
 import org.jsoup.nodes.Document
 import java.net.URI
-import java.net避免
 import java.net.URLEncoder
 import java.util.LinkedHashMap
 import kotlin.math.min
