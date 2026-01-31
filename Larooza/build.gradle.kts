@@ -7,26 +7,20 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// ✅ Viktigt: använd apply(...) istället för plugins { id(...) } för cloudstream-plugin här
-apply(plugin = "com.lagradost.cloudstream3.plugin")
-
 android {
     namespace = "com.example"
     compileSdk = 34
 
     defaultConfig {
         minSdk = 21
+        // targetSdk är bara en varning i library-moduler, men okej att ha kvar
         targetSdk = 34
         consumerProguardFiles("consumer-rules.pro")
     }
 
     buildTypes {
-        release {
-            isMinifyEnabled = false
-        }
-        debug {
-            isMinifyEnabled = false
-        }
+        release { isMinifyEnabled = false }
+        debug { isMinifyEnabled = false }
     }
 
     compileOptions {
@@ -47,6 +41,13 @@ tasks.withType<KotlinCompile>().configureEach {
     }
 }
 
+/**
+ * NOTE:
+ * - Vi inkluderar cloudstream-blocket bara som metadata.
+ * - Om cloudstream-plugin inte finns i detta repo så ignoreras blocket av Gradle.
+ * - Det påverkar INTE Kotlin-kompileringen.
+ */
+@Suppress("UNUSED_EXPRESSION")
 cloudstream {
     description = "Cima4U provider"
     authors = listOf("FathedAbOss")
