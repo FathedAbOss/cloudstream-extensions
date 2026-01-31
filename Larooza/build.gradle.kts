@@ -27,11 +27,6 @@ tasks.withType<KotlinCompile>().configureEach {
         jvmTarget.set(JvmTarget.JVM_17)
         jvmDefault.set(JvmDefaultMode.ENABLE)
         allWarningsAsErrors.set(false)
-
-        // ✅ Dessa hjälper ofta logga tydligare fel
-        freeCompilerArgs.addAll(
-            "-Xreport-perf",
-            "-Xdump-declarations-to=${project.buildDir}/kotlin-dump"
-        )
+        // ✅ no unsupported flags here
     }
 }
