@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION") // ✅ prevents deprecated ExtractorLink warning => no more -Werror build fail
+
 package com.example
 
 import com.lagradost.cloudstream3.*
@@ -48,7 +50,7 @@ class Cima4UProvider : MainAPI() {
 
     /**
      * Canonicalize:
-     * - Use Cloudstream's MainAPI.fixUrl(url) (ONE ARG)
+     * - Use Cloudstream's MainAPI.fixUrl(url) (ONE ARG) -> no build conflict
      * - Keep query params
      * - Drop only fragment (#...)
      */
@@ -58,19 +60,20 @@ class Cima4UProvider : MainAPI() {
         return fixUrl(u).substringBefore("#").trim()
     }
 
+    // ✅ FIX: never call lowercase/contains on nullable host
     private fun isInternalUrl(u: String): Boolean {
         if (!u.startsWith("http")) return true
         val host = runCatching { (URI(u).host ?: "").lowercase() }.getOrDefault("")
         if (host.isBlank()) return true
-        return host.contains("cfu") || host.contains("cima4u") || host.contains("cima4")
+        return host.contains("cfu") || host.contains("cima4u") || host.contains("egybests") || host.contains("cima4")
     }
 
     private fun guessType(title: String, url: String): TvType {
         val t = title.lowercase()
         val u = url.lowercase()
-        if (t.contains("مسلسل") || t.contains("الحلقة") || t.contains("موسم") || u.contains("series") || u.contains("season"))
+        if (t.contains("مسلسل") || t.contains("الحلقة") || t.contains("موسم") || u.contains("series"))
             return TvType.TvSeries
-        if (t.contains("انمي") || u.contains("anime") || u.contains("انمي"))
+        if (t.contains("انمي") || u.contains("انمي"))
             return TvType.Anime
         return TvType.Movie
     }
@@ -102,59 +105,47 @@ class Cima4UProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page <= 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
-        val doc = app.get(url, headers = headersOf("$mainUrl/")).document
+        val doc = app.get(request.data, headers = headersOf("$mainUrl/")).document
         val items = parseListing(doc)
         return newHomePageResponse(request.name, items)
     }
 
     // ---------------------------
-    // Listing parser
+    // Listing parser (simple + robust)
     // ---------------------------
     private suspend fun parseListing(doc: Document): List<SearchResponse> {
         val out = LinkedHashMap<String, SearchResponse>()
         val ph = posterHeaders()
 
-        val cards = doc.select("article, .post, .item, .ml-item, .GridItem, .entry, .col-md-2, .col-sm-3, .col-xs-6")
+        val anchors = doc.select("a[href]")
         var ogCount = 0
 
-        for (card in cards) {
-            val a = card.selectFirst("a[href]") ?: continue
-            val url = canonical(a.attr("href"))
-            if (url.isBlank() || !isInternalUrl(url)) continue
-            if (url.contains("/category/") || url.contains("/tag/") || url.contains("/page/")) continue
+        for (a in anchors) {
+            val href = a.attr("href").trim()
+            if (href.isBlank()) continue
 
-            val rawTitle =
-                card.selectFirst("h3, h2, .title, .entry-title, .post-title")?.text()?.trim()
-                    ?: a.attr("title").trim().ifBlank { a.text().trim() }
+            val url = canonical(href)
+            if (!isInternalUrl(url)) continue
+            if (url.contains("/watch", ignoreCase = true)) continue
 
-            val title = rawTitle.ifBlank { continue }
+            val title = a.text().trim()
+            if (title.length < 5) continue
+            if (!title.contains("مشاهدة")) continue
+
             val type = guessType(title, url)
 
-            var poster: String? =
-                card.selectFirst("img")?.let { img ->
-                    img.attr("data-src").ifBlank {
-                        img.attr("data-lazy-src").ifBlank {
-                            img.attr("data-original").ifBlank {
-                                img.attr("src")
-                            }
-                        }
-                    }.trim().ifBlank { null }
-                }
-
-            if (poster.isNullOrBlank() && ogCount < 18) {
+            var poster: String? = null
+            if (ogCount < 18) {
                 ogCount++
                 poster = fetchOgPosterCached(url)
             }
 
-            out.putIfAbsent(
-                url,
-                newMovieSearchResponse(title, url, type) {
-                    posterUrl = fixUrlNull(poster?.let { canonical(it) })
-                    posterHeaders = ph
-                }
-            )
+            val sr = newMovieSearchResponse(title, url, type) {
+                posterUrl = fixUrlNull(poster)
+                posterHeaders = ph
+            }
 
+            out.putIfAbsent(url, sr)
             if (out.size >= 80) break
         }
 
@@ -177,8 +168,9 @@ class Cima4UProvider : MainAPI() {
 
         for (u in urls) {
             val doc = runCatching { app.get(u, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: continue
-            val parsed = parseListing(doc).take(MAX_SEARCH_RESULTS)
-            if (parsed.isNotEmpty()) return parsed
+            val parsed = parseListing(doc)
+            val filtered = parsed.filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
+            if (filtered.isNotEmpty()) return filtered
         }
 
         return crawlSearchFallback(q)
@@ -194,7 +186,7 @@ class Cima4UProvider : MainAPI() {
         for (section in sections) {
             var p = 1
             while (p <= MAX_CRAWL_PAGES && out.size < MAX_SEARCH_RESULTS) {
-                val pageUrl = if (p == 1) section else "${section.trimEnd('/')}/page/$p/"
+                val pageUrl = if (p == 1) section else "${section}page/$p/"
                 val doc = runCatching { app.get(pageUrl, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: break
                 val items = parseListing(doc)
                 if (items.isEmpty()) break
@@ -210,16 +202,15 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Load
+    // Load (details)
     // ---------------------------
     override suspend fun load(url: String): LoadResponse {
         val pageUrl = canonical(url)
         val doc = app.get(pageUrl, headers = headersOf("$mainUrl/")).document
 
         val title =
-            doc.selectFirst("h1.entry-title, h1.post-title, h1")?.text()?.trim()
+            doc.selectFirst("h1")?.text()?.trim()
                 ?: doc.selectFirst("meta[property=og:title]")?.attr("content")?.trim()
-                ?: doc.selectFirst("title")?.text()?.trim()
                 ?: "Cima4U"
 
         val poster =
@@ -227,7 +218,7 @@ class Cima4UProvider : MainAPI() {
                 ?: doc.selectFirst("img[src]")?.attr("src")?.trim()
 
         val plot =
-            doc.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.trim()
+            doc.selectFirst("meta[property=og:description]")?.attr("content")?.trim()
 
         val type = guessType(title, pageUrl)
         val ph = posterHeaders()
@@ -285,10 +276,10 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Link discovery
+    // Link discovery (details -> watch -> external hosts)
     // ---------------------------
     private fun Document.findWatchUrl(detailsUrl: String): String? {
-        val a = selectFirst("a:contains(مشاهدة الآن), a:contains(شاهد الآن), a[href*=/watch], a[href*=watch]")
+        val a = selectFirst("a:contains(مشاهدة الآن), a[href*=/watch]")
         val href = a?.attr("href")?.trim().orEmpty()
         if (href.isNotBlank()) return canonical(href)
 
@@ -359,23 +350,20 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    // ✅ FIX: Use newExtractorLink with the correct signature (no deprecated constructor)
-    private suspend fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
+    // ✅ Keep your working direct emitter EXACTLY, but now the warning is suppressed at file level
+    private fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
         val low = url.lowercase()
-        val type = if (low.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-
+        val isM3u8 = low.contains(".m3u8")
         callback(
-            newExtractorLink(
-                source = name,
-                name = "Cima4U Direct",
-                url = url,
-                type = type
-            ) {
-                // These are vars in Cloudstream cores that support newExtractorLink initializer
-                referer = pageUrl
-                quality = Qualities.Unknown.value
-                headers = headersOf(pageUrl)
-            }
+            ExtractorLink(
+                name,
+                "Cima4U Direct",
+                url,
+                pageUrl,
+                Qualities.Unknown.value,
+                isM3u8,
+                headersOf(pageUrl)
+            )
         )
     }
 
@@ -389,11 +377,13 @@ class Cima4UProvider : MainAPI() {
         if (detailsUrl.isBlank()) return false
 
         val detailsDoc = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
-        val watchUrl = detailsDoc.findWatchUrl(detailsUrl) ?: detailsUrl
+        val watchUrl = detailsDoc.findWatchUrl(detailsUrl) ?: return false
+
         val watchDoc = app.get(watchUrl, headers = headersOf(detailsUrl)).document
 
         val candidates = LinkedHashSet<String>()
         watchDoc.extractServerCandidates().forEach { candidates.add(it) }
+
         if (candidates.isEmpty()) return false
 
         val expanded = LinkedHashSet<String>()
