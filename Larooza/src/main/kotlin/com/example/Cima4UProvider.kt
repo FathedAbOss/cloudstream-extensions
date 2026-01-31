@@ -28,8 +28,8 @@ class Cima4UProvider : MainAPI() {
     // ---------------------------
     private val MAX_ITEMS = 90
     private val MAX_SEARCH_RESULTS = 30
-    private val MAX_INTERNAL_RESOLVE = 16
-    private val MAX_FINAL_LINKS = 70
+    private val MAX_INTERNAL_RESOLVE = 18
+    private val MAX_FINAL_LINKS = 80
     private val PER_REQ_TIMEOUT_MS = 6500L
 
     private fun headersOf(referer: String) = mapOf(
@@ -53,30 +53,39 @@ class Cima4UProvider : MainAPI() {
         if (!u.startsWith("http")) return true
         val host = runCatching { URI(u).host?.lowercase().orEmpty() }.getOrDefault("")
         if (host.isBlank()) return true
-        return host.contains("cfu") || host.contains("cima4u") || host.contains("cima")
+        return host.contains("cfu") || host.contains("cima")
     }
 
-    // ✅ أهم فلتر: يمنع روابط المينيو والقوائم
-    private fun isContentUrl(u: String): Boolean {
-        val url = u.lowercase()
+    // ✅ رفض صفحات الأقسام والمينيو
+    private fun isBadListingOrMenuUrl(url: String): Boolean {
+        val u = url.lowercase().trimEnd('/')
 
-        // Reject obvious menu/list/category pages
-        val bad = listOf(
-            "/category/", "/tag/", "/page/", "/wp-", "facebook.com", "twitter.com", "t.me",
-            "/privacy", "/contact", "/about", "/dmca"
+        val badContains = listOf(
+            "/category/", "/tag/", "/page/", "/wp-", "/privacy", "/contact", "/about", "/dmca",
+            "facebook.com", "twitter.com", "t.me", "telegram", "instagram.com", "youtube.com"
         )
-        if (bad.any { url.contains(it) }) return false
+        if (badContains.any { u.contains(it) }) return true
 
-        // Reject homepage and pure section pages
-        val clean = url.removeSuffix("/")
-        if (clean == mainUrl.lowercase().removeSuffix("/")) return false
-
-        // Accept patterns for content/watch/episode
-        val good = listOf(
-            "watch.php?vid=", "/watch", "/play", "/player", "/embed",
-            "/movie", "/film", "/serie", "/series", "/episode", "الحلقة", "مسلسل", "فيلم"
+        val badEnds = listOf(
+            "/movies", "/movie", "/series", "/anime",
+            "/aflam", "/mosalsalat", "/مسلسلات", "/افلام"
         )
-        return good.any { url.contains(it) }
+        if (badEnds.any { u.endsWith(it) }) return true
+
+        val home = mainUrl.lowercase().trimEnd('/')
+        if (u == home) return true
+
+        return false
+    }
+
+    private fun looksLikeRealPoster(posterUrl: String): Boolean {
+        val p = posterUrl.lowercase()
+        if (p.startsWith("data:")) return false
+        if (p.contains("logo") || p.contains("icon") || p.contains("placeholder") || p.contains("sprite")) return false
+
+        val goodExt = p.contains(".jpg") || p.contains(".jpeg") || p.contains(".png") || p.contains(".webp")
+        val wpUploads = p.contains("wp-content/uploads") || p.contains("/uploads/")
+        return goodExt || wpUploads
     }
 
     private fun guessTypeFrom(url: String, title: String): TvType {
@@ -90,7 +99,7 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // MainPage (استعمل روابط شبه مؤكدة)
+    // MainPage
     // ---------------------------
     override val mainPage = mainPageOf(
         "$mainUrl/" to "الأحدث",
@@ -102,114 +111,117 @@ class Cima4UProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // pagination محاولة عامة
         val base = request.data.trimEnd('/')
         val url = if (page <= 1) base else "$base/page/$page/"
 
         val doc = runCatching { app.get(url, headers = headersOf("$mainUrl/")).document }
             .getOrElse {
-                // fallback: جرّب بدون /page/
                 val alt = if (page <= 1) base else "$base?page=$page"
                 app.get(alt, headers = headersOf("$mainUrl/")).document
             }
 
-        val items = parseCardsStrict(doc)
+        val items = parsePosterCardsOnly(doc)
         return newHomePageResponse(request.name, items)
     }
 
     // ---------------------------
-    // ✅ Parser صارم: فقط روابط فيها صورة + شكل بطاقة
+    // ✅ Parser جديد: يعتمد على "الصور الحقيقية" فقط
     // ---------------------------
-    private fun Element.posterFromHere(): String? {
-        val img = this.selectFirst("img")
-        if (img != null) {
-            val src = img.attr("data-src").trim().ifBlank { img.attr("data-lazy-src").trim() }
-                .ifBlank { img.attr("data-original").trim() }
-                .ifBlank { img.attr("src").trim() }
-            if (src.isNotBlank() && !src.startsWith("data:")) return fixUrl(src)
-        }
+    private fun Element.safePosterUrl(): String? {
+        val img = this.selectFirst("img") ?: return null
+        val raw = img.attr("data-src").trim()
+            .ifBlank { img.attr("data-lazy-src").trim() }
+            .ifBlank { img.attr("data-original").trim() }
+            .ifBlank { img.attr("src").trim() }
 
-        val style = this.attr("style")
-        if (style.contains("background-image", true)) {
-            val m = Regex("""url\((['"]?)(.*?)\1\)""").find(style)
-            val raw = m?.groupValues?.getOrNull(2)?.trim()
-            if (!raw.isNullOrBlank() && !raw.startsWith("data:")) return fixUrl(raw)
-        }
-        return null
+        if (raw.isBlank()) return null
+        val fixed = fixUrl(raw)
+        return if (looksLikeRealPoster(fixed)) fixed else null
     }
 
-    private fun Element.bestTitle(): String? {
-        val h = this.selectFirst("h1,h2,h3,.title,.name,.entry-title,strong")?.text()?.trim()
-        if (!h.isNullOrBlank() && h.length >= 2) return h
-
-        val imgAlt = this.selectFirst("img")?.attr("alt")?.trim()
+    private fun titleFrom(imgOrCard: Element): String? {
+        val imgAlt = imgOrCard.selectFirst("img")?.attr("alt")?.trim()
         if (!imgAlt.isNullOrBlank() && imgAlt.length >= 2) return imgAlt
 
-        val aTitle = this.selectFirst("a")?.attr("title")?.trim()
+        val t = imgOrCard.selectFirst("h1,h2,h3,.title,.name,.entry-title,strong")?.text()?.trim()
+        if (!t.isNullOrBlank() && t.length >= 2) return t
+
+        val aTitle = imgOrCard.selectFirst("a")?.attr("title")?.trim()
         if (!aTitle.isNullOrBlank() && aTitle.length >= 2) return aTitle
 
-        val aText = this.selectFirst("a")?.text()?.trim()
+        val aText = imgOrCard.selectFirst("a")?.text()?.trim()
         if (!aText.isNullOrBlank() && aText.length >= 2) return aText
 
         return null
     }
 
-    private suspend fun parseCardsStrict(doc: Document): List<SearchResponse> {
+    private fun findNearestLink(el: Element): String? {
+        val a = el.closest("a[href]") ?: el.selectFirst("a[href]") ?: return null
+        val href = a.attr("href").trim()
+        if (href.isBlank()) return null
+        return canonical(href)
+    }
+
+    private suspend fun parsePosterCardsOnly(doc: Document): List<SearchResponse> {
         val out = LinkedHashMap<String, SearchResponse>()
         val ph = posterHeaders()
 
-        // 1) أفضل مصدر: روابط فيها img (غالباً بوستر)
-        val linksWithImg = doc.select("a[href]:has(img)")
-        for (a in linksWithImg) {
-            val href = a.attr("href").trim()
-            if (href.isBlank()) continue
+        // 1) الطريقة الأقوى: كل بوستر حقيقي -> خذ رابط أقرب a[href]
+        val images = doc.select("img")
+        for (img in images) {
+            val raw = img.attr("data-src").trim()
+                .ifBlank { img.attr("data-lazy-src").trim() }
+                .ifBlank { img.attr("data-original").trim() }
+                .ifBlank { img.attr("src").trim() }
+            if (raw.isBlank()) continue
 
-            val url = canonical(href)
-            if (!isInternalUrl(url)) continue
-            if (!isContentUrl(url)) continue
+            val poster = fixUrl(raw)
+            if (!looksLikeRealPoster(poster)) continue
 
-            val container = a.parent() ?: a
-            val poster = container.posterFromHere() ?: a.posterFromHere()
-            val title = container.bestTitle() ?: a.bestTitle() ?: continue
+            val link = findNearestLink(img) ?: continue
+            if (!isInternalUrl(link)) continue
+            if (isBadListingOrMenuUrl(link)) continue
 
-            // فلتر إضافي يمنع (الرئيسية/أفلام/مسلسلات) تتكرر
+            val card = img.parent() ?: img
+            val title = (img.attr("alt")?.trim().takeIf { !it.isNullOrBlank() && it.length >= 2 })
+                ?: titleFrom(card)
+                ?: continue
+
             val badTitles = setOf("الرئيسية", "أفلام", "مسلسلات", "السينما للجميع", "انمي", "أنمي")
             if (badTitles.contains(title.trim())) continue
 
-            val type = guessTypeFrom(url, title)
-
-            val sr = newMovieSearchResponse(title, url, type) {
+            val type = guessTypeFrom(link, title)
+            val sr = newMovieSearchResponse(title, link, type) {
                 posterUrl = fixUrlNull(poster)
                 posterHeaders = ph
             }
-            out.putIfAbsent(url, sr)
+
+            out.putIfAbsent(link, sr)
             if (out.size >= MAX_ITEMS) break
         }
 
-        // 2) إذا ما طلع شي، جرّب كروت article/div بس بشرط وجود img
+        // 2) fallback: a[href]:has(img) بشرط وجود poster حقيقي
         if (out.isEmpty()) {
-            val cards = doc.select("article:has(img), div:has(img)")
-            for (c in cards) {
-                val a = c.selectFirst("a[href]") ?: continue
+            val linksWithImg = doc.select("a[href]:has(img)")
+            for (a in linksWithImg) {
                 val href = a.attr("href").trim()
                 if (href.isBlank()) continue
-                val url = canonical(href)
-                if (!isInternalUrl(url)) continue
-                if (!isContentUrl(url)) continue
+                val link = canonical(href)
+                if (!isInternalUrl(link)) continue
+                if (isBadListingOrMenuUrl(link)) continue
 
-                val poster = c.posterFromHere()
-                val title = c.bestTitle() ?: continue
+                val poster = a.safePosterUrl() ?: continue // ✅ poster-only
+                val title = titleFrom(a) ?: continue
 
                 val badTitles = setOf("الرئيسية", "أفلام", "مسلسلات", "السينما للجميع", "انمي", "أنمي")
                 if (badTitles.contains(title.trim())) continue
 
-                val type = guessTypeFrom(url, title)
-
-                val sr = newMovieSearchResponse(title, url, type) {
+                val type = guessTypeFrom(link, title)
+                val sr = newMovieSearchResponse(title, link, type) {
                     posterUrl = fixUrlNull(poster)
                     posterHeaders = ph
                 }
-                out.putIfAbsent(url, sr)
+                out.putIfAbsent(link, sr)
                 if (out.size >= MAX_ITEMS) break
             }
         }
@@ -235,15 +247,14 @@ class Cima4UProvider : MainAPI() {
 
         for (u in urls) {
             val doc = runCatching { app.get(u, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: continue
-            val parsed = parseCardsStrict(doc)
+            val parsed = parsePosterCardsOnly(doc)
             val filtered = parsed.filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
             if (filtered.isNotEmpty()) return filtered
         }
 
-        // fallback: رجّع اللي لقيته حتى لو بدون فلترة كبيرة
         val doc = runCatching { app.get("$mainUrl/?s=$enc", headers = headersOf("$mainUrl/")).document }.getOrNull()
             ?: return emptyList()
-        return parseCardsStrict(doc).take(MAX_SEARCH_RESULTS)
+        return parsePosterCardsOnly(doc).take(MAX_SEARCH_RESULTS)
     }
 
     // ---------------------------
@@ -292,12 +303,13 @@ class Cima4UProvider : MainAPI() {
             val link = canonical(href)
             if (!isInternalUrl(link)) continue
             if (canonical(seriesUrl) == link) continue
+            if (isBadListingOrMenuUrl(link)) continue
 
             val text = a.text().trim()
             val looksEpisode =
                 text.contains("الحلقة") ||
-                link.contains("episode", true) ||
-                link.contains("الحلقة", true)
+                    link.contains("episode", true) ||
+                    link.contains("الحلقة", true)
 
             if (!looksEpisode) continue
 
@@ -369,7 +381,7 @@ class Cima4UProvider : MainAPI() {
             if (ok) out.add(canonical(href))
         }
 
-        // direct from scripts/html
+        // direct from html
         val html = this.html()
         Regex("""https?://[^\s"'<>]+?\.(mp4|m3u8)(\?[^\s"'<>]+)?""", RegexOption.IGNORE_CASE)
             .findAll(html).forEach { out.add(it.value) }
@@ -408,7 +420,6 @@ class Cima4UProvider : MainAPI() {
                 val out = LinkedHashSet<String>()
                 doc.extractServerCandidates().forEach { out.add(it) }
 
-                // decode slp_watch if exists
                 val slp = extractSlpWatchParam(fixed)
                 val decoded = slp?.let { decodeSlpWatchUrl(it) }
                 if (!decoded.isNullOrBlank()) out.add(decoded)
@@ -454,7 +465,7 @@ class Cima4UProvider : MainAPI() {
         expanded.addAll(candidates)
 
         var internalUsed = 0
-        for (c in candidates.toList().take(min(candidates.size, 120))) {
+        for (c in candidates.toList().take(min(candidates.size, 140))) {
             if (internalUsed >= MAX_INTERNAL_RESOLVE) break
 
             val slp = extractSlpWatchParam(c)
