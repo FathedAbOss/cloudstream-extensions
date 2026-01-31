@@ -23,19 +23,14 @@ class Cima4UProvider : MainAPI() {
         TvType.Anime
     )
 
-    // ---------------------------
-    // Safety limits
-    // ---------------------------
     private val MAX_SEARCH_RESULTS = 30
     private val MAX_CRAWL_PAGES = 6
     private val MAX_FINAL_LINKS = 60
     private val MAX_INTERNAL_RESOLVE = 14
     private val PER_REQ_TIMEOUT_MS = 6500L
 
-    // Title enrichment (to fix "افلام اجنبي 3332" and SEO text)
     private val DETAILS_TITLE_FETCH_LIMIT = 12
 
-    // Small poster cache to reduce requests
     private val posterCache = LinkedHashMap<String, String?>()
 
     private fun headersOf(referer: String) = mapOf(
@@ -49,11 +44,6 @@ class Cima4UProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
-    /**
-     * Canonicalize:
-     * - Use MainAPI.fixUrl(url) (ONE ARG)
-     * - Drop only fragment
-     */
     private fun canonical(raw: String): String {
         val u = raw.trim()
         if (u.isBlank()) return u
@@ -62,9 +52,9 @@ class Cima4UProvider : MainAPI() {
 
     private fun isInternalUrl(u: String): Boolean {
         if (!u.startsWith("http")) return true
-        val host = runCatching { URI(u).host?.lowercase().orEmpty() }.getOrDefault("")
+        val host = runCatching { URI(u).host?.lowercase() ?: "" }.getOrDefault("")
         if (host.isBlank()) return true
-        return host.contains("cfu") || host.contains("cima4u") || host.contains("cima4u") || host.contains("cima4")
+        return host.contains("cfu") || host.contains("cima4u") || host.contains("cima4")
     }
 
     private fun guessType(title: String, url: String): TvType {
@@ -85,15 +75,12 @@ class Cima4UProvider : MainAPI() {
         if (s.isBlank()) return true
         if (s.length < 3) return true
 
-        // Examples: "افلام اجنبي 3332" or "مسلسلات انمي 540"
         val badIdLike = Regex("""^(افلام|مسلسلات)\s+.+\s+\d{2,}$""")
         if (badIdLike.containsMatchIn(s)) return true
 
-        // Too SEO-y
         if (s.contains("حصريا", ignoreCase = true) && s.contains("مشاهدة", ignoreCase = true)) return true
         if (s.count { it == '|' } >= 2) return true
 
-        // Just provider name
         if (s.equals(name, ignoreCase = true) || s.equals("Cima4u", ignoreCase = true)) return true
 
         return false
@@ -105,18 +92,14 @@ class Cima4UProvider : MainAPI() {
             .replace(Regex("""\s+"""), " ")
             .trim()
 
-        // Remove common SEO words
         val junk = listOf(
             "حصريا على", "مشاهدة", "تحميل", "فيلم", "مسلسل", "مترجم", "مدبلج",
             "اون لاين", "اونلاين", "المشاهدة", "الجودة", "بجودة", "موقع", "الاصلي",
             "السينما للجميع", "سيما فور يو", "Cima4u", "Cima 4 u", "Cima4U"
         )
 
-        for (w in junk) {
-            t = t.replace(w, " ")
-        }
+        for (w in junk) t = t.replace(w, " ")
 
-        // Remove repeated pipes and extra separators
         t = t.replace("|", " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
@@ -126,7 +109,6 @@ class Cima4UProvider : MainAPI() {
 
     private fun Element.pickPosterUrl(): String? {
         val img = this.selectFirst("img") ?: return null
-
         val url = img.attr("data-src").ifBlank {
             img.attr("data-lazy-src").ifBlank {
                 img.attr("data-original").ifBlank {
@@ -140,7 +122,6 @@ class Cima4UProvider : MainAPI() {
     }
 
     private fun Element.pickDetailsUrl(): String? {
-        // Pick first internal link likely pointing to a post
         val links = this.select("a[href]")
         for (a in links) {
             val href = a.attr("href").trim()
@@ -148,7 +129,6 @@ class Cima4UProvider : MainAPI() {
             val u = canonical(href)
             if (!isInternalUrl(u)) continue
 
-            // skip obvious non-post pages
             val low = u.lowercase()
             if (low.contains("/category/")) continue
             if (low.contains("/tag/")) continue
@@ -161,18 +141,14 @@ class Cima4UProvider : MainAPI() {
     }
 
     private fun Element.pickTitleGuess(): String {
-        // 1) img alt/title
         val img = this.selectFirst("img")
         val alt = img?.attr("alt")?.trim().orEmpty()
         val imgTitle = img?.attr("title")?.trim().orEmpty()
 
-        // 2) a[title]
         val aTitle = this.selectFirst("a[title]")?.attr("title")?.trim().orEmpty()
 
-        // 3) headings
         val h = this.selectFirst("h3, h2, .title, .entry-title, .post-title")?.text()?.trim().orEmpty()
 
-        // 4) fallback text
         val aText = this.selectFirst("a[href]")?.text()?.trim().orEmpty()
 
         val candidates = listOf(alt, imgTitle, aTitle, h, aText)
@@ -205,12 +181,9 @@ class Cima4UProvider : MainAPI() {
             .map { cleanTitle(it) }
             .filter { it.isNotBlank() }
 
-        // Choose the first non-bad title
         for (c in candidates) {
             if (!isBadTitle(c)) return c
         }
-
-        // last resort
         return candidates.firstOrNull().takeIf { it.isNotBlank() } ?: "Cima4U"
     }
 
@@ -251,12 +224,8 @@ class Cima4UProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page <= 1) {
-            request.data
-        } else {
-            val base = request.data.trimEnd('/')
-            "$base/page/$page/"
-        }
+        val url = if (page <= 1) request.data
+        else "${request.data.trimEnd('/')}/page/$page/"
 
         val doc = app.get(url, headers = headersOf("$mainUrl/")).document
         val items = parseListing(doc)
@@ -270,15 +239,17 @@ class Cima4UProvider : MainAPI() {
         val out = LinkedHashMap<String, SearchResponse>()
         val ph = posterHeaders()
 
-        // Try to find "cards" first
+        // ✅ Always List<Element>
         val cardSelectors = listOf(
             "article", ".post", ".item", ".ml-item", ".GridItem", ".col-md-2", ".col-sm-3", ".col-xs-6", ".entry"
         )
-        var cards = doc.select(cardSelectors.joinToString(","))
 
-        // fallback if empty: use links but wrap with parent element
+        var cards: List<Element> = doc.select(cardSelectors.joinToString(",")).toList()
+
         if (cards.isEmpty()) {
-            cards = doc.select("a[href]").map { it.parent() ?: it }.distinct()
+            cards = doc.select("a[href]")
+                .map { it.parent() ?: it }
+                .distinct()
         }
 
         var enriched = 0
@@ -290,14 +261,12 @@ class Cima4UProvider : MainAPI() {
             var title = card.pickTitleGuess()
             val poster = card.pickPosterUrl() ?: fetchOgPosterCached(detailsUrl)
 
-            // If title is bad, try to fetch title from details (bounded)
             if (isBadTitle(title) && enriched < DETAILS_TITLE_FETCH_LIMIT) {
                 val better = fetchBetterTitle(detailsUrl)
                 if (!better.isNullOrBlank()) title = better
                 enriched++
             }
 
-            // final fallback from slug
             if (isBadTitle(title)) {
                 val slugTitle = titleFromUrlSlug(detailsUrl)
                 if (slugTitle.isNotBlank()) title = slugTitle
@@ -335,11 +304,8 @@ class Cima4UProvider : MainAPI() {
 
         for (u in urls) {
             val doc = runCatching { app.get(u, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: continue
-            val parsed = parseListing(doc)
-
-            // Keep it simple: return first good batch
-            val filtered = parsed.take(MAX_SEARCH_RESULTS)
-            if (filtered.isNotEmpty()) return filtered
+            val parsed = parseListing(doc).take(MAX_SEARCH_RESULTS)
+            if (parsed.isNotEmpty()) return parsed
         }
 
         return crawlSearchFallback(q)
@@ -380,8 +346,7 @@ class Cima4UProvider : MainAPI() {
         val title = bestTitleFromDoc(doc, pageUrl)
 
         val poster =
-            doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()
-                ?.ifBlank { null }
+            doc.selectFirst("meta[property=og:image]")?.attr("content")?.trim()?.ifBlank { null }
                 ?: doc.selectFirst("img.wp-post-image, .poster img, .thumb img, img[src]")?.let { img ->
                     img.attr("data-src").ifBlank {
                         img.attr("data-lazy-src").ifBlank {
@@ -395,7 +360,7 @@ class Cima4UProvider : MainAPI() {
         val plot =
             doc.selectFirst("meta[property=og:description], meta[name=description]")?.attr("content")?.trim()
                 ?.takeIf { it.isNotBlank() }
-                ?.let { it.take(350) } // avoid huge SEO walls
+                ?.let { it.take(350) }
 
         val type = guessType(title, pageUrl)
         val ph = posterHeaders()
@@ -416,11 +381,6 @@ class Cima4UProvider : MainAPI() {
         }
     }
 
-    /**
-     * Simple episode extraction:
-     * - links containing "الحلقة"
-     * - else single episode
-     */
     private fun Document.extractEpisodesSimple(seriesUrl: String): List<Episode> {
         val found = LinkedHashMap<String, Episode>()
         val epRegex = Regex("""الحلقة\s*(\d{1,4})""")
@@ -467,7 +427,6 @@ class Cima4UProvider : MainAPI() {
         val href = a?.attr("href")?.trim().orEmpty()
         if (href.isNotBlank()) return canonical(href)
 
-        // fallback guess
         val clean = if (detailsUrl.endsWith("/")) detailsUrl else "$detailsUrl/"
         return "${clean}watch/"
     }
@@ -475,7 +434,6 @@ class Cima4UProvider : MainAPI() {
     private fun Document.extractServerCandidates(): List<String> {
         val out = LinkedHashSet<String>()
 
-        // anchors
         select("a[href]").forEach { a ->
             val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
             if (href.isBlank()) return@forEach
@@ -497,7 +455,6 @@ class Cima4UProvider : MainAPI() {
             if (looksUseful) out.add(u)
         }
 
-        // data-* embeds
         select("[data-watch]").forEach {
             val v = it.attr("data-watch").trim()
             if (v.isNotBlank()) out.add(canonical(v))
@@ -511,13 +468,11 @@ class Cima4UProvider : MainAPI() {
             }
         }
 
-        // iframes
         select("iframe[src]").forEach {
             val v = it.attr("src").trim()
             if (v.isNotBlank()) out.add(canonical(v))
         }
 
-        // onclick URLs
         select("[onclick]").forEach { el ->
             val oc = el.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
@@ -539,7 +494,7 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    // ✅ Correct newExtractorLink usage (no signature mismatch)
+    // ✅ No 'referer = ...' here (your ExtractorLink.referer seems to be val)
     private suspend fun emitDirect(url: String, pageUrl: String, callback: (ExtractorLink) -> Unit) {
         val low = url.lowercase()
         val isM3u8 = low.contains(".m3u8")
@@ -550,10 +505,11 @@ class Cima4UProvider : MainAPI() {
                 name = "Cima4U Direct",
                 url = url
             ) {
-                referer = pageUrl
-                quality = Qualities.Unknown.value
-                this.isM3u8 = isM3u8
+                // Put referer in headers instead
                 headers = headersOf(pageUrl)
+                this.isM3u8 = isM3u8
+                // quality is usually var, but keep safe:
+                quality = Qualities.Unknown.value
             }
         )
     }
