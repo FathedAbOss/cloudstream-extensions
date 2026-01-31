@@ -21,14 +21,12 @@ android {
     }
 }
 
-// ✅ New DSL instead of kotlinOptions
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
-        // keep warnings as warnings (not errors)
         allWarningsAsErrors.set(false)
-        // remove -Werror if any parent script adds it
-        freeCompilerArgs.addAll(listOf("-Xjvm-default=all"))
+        // ✅ Replace deprecated -Xjvm-default
+        freeCompilerArgs.addAll(listOf("-jvm-default=all"))
     }
 }
 
