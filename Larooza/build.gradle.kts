@@ -1,9 +1,11 @@
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
+    id("com.lagradost.cloudstream3.plugin")
 }
 
 android {
@@ -13,6 +15,16 @@ android {
     defaultConfig {
         minSdk = 21
         targetSdk = 34
+        consumerProguardFiles("consumer-rules.pro")
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+        debug {
+            isMinifyEnabled = false
+        }
     }
 
     compileOptions {
@@ -21,12 +33,21 @@ android {
     }
 }
 
+/**
+ * ✅ NEW DSL (fixar både kotlinOptions-felet och -jvm-default=all-felet)
+ *
+ * Din Kotlin accepterar: [disable, enable, no-compatibility]
+ * Så vi använder ENABLE (motsvarar i praktiken "all" i äldre setup).
+ */
 tasks.withType<KotlinCompile>().configureEach {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
+
+        // Viktigt: byt bort "all" -> "enable"
+        jvmDefault.set(JvmDefaultMode.ENABLE)
+
+        // Om repo:n tidigare tvingade Werror i någon modul så neutraliserar vi det här
         allWarningsAsErrors.set(false)
-        // ✅ Replace deprecated -Xjvm-default
-        freeCompilerArgs.addAll(listOf("-jvm-default=all"))
     }
 }
 
