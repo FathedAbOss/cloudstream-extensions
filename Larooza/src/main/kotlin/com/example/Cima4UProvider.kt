@@ -47,12 +47,6 @@ class Cima4UProvider : MainAPI() {
         "Accept" to "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"
     )
 
-    /**
-     * Canonicalize:
-     * - fixUrl(url) one arg only
-     * - keep query
-     * - drop fragment only
-     */
     private fun canonical(raw: String): String {
         val u = raw.trim()
         if (u.isBlank()) return u
@@ -83,10 +77,6 @@ class Cima4UProvider : MainAPI() {
             (low == (mainUrl.trimEnd('/') + "/").lowercase())
     }
 
-    /**
-     * Determine if URL looks like a media post page (movie/series/episode/watch),
-     * not a category/tag/page listing.
-     */
     private fun looksLikePostUrl(u: String): Boolean {
         if (!isInternalUrl(u)) return false
         if (isListingUrl(u)) return false
@@ -115,25 +105,26 @@ class Cima4UProvider : MainAPI() {
 
     private fun sanitizeTitle(raw: String): String {
         var t = raw.trim()
-
-        // Cut at common separators (keep the first meaningful chunk)
         listOf("|", " - ", " — ", " – ").forEach { sep ->
             if (t.contains(sep)) t = t.substringBefore(sep).trim()
         }
-
-        // Collapse spaces
         t = t.replace(Regex("\\s+"), " ").trim()
-
-        // Reject pure numbers or very short junk
         if (t.matches(Regex("^\\d{1,6}$"))) return ""
         if (t.length < 2) return ""
-
-        // If super long SEO-ish text, shrink hard
         if (t.length > 140 && (t.contains("مشاهدة") || t.contains("تحميل") || t.contains("موقع"))) {
             t = t.take(120).trim()
         }
-
         return t
+    }
+
+    private fun isGarbageTitle(t: String): Boolean {
+        val s = t.trim()
+        if (s.isBlank()) return true
+        if (s.equals("cima4u", true) || s.equals("cima4 u", true) || s.equals(name, true)) return true
+        if (s.matches(Regex("^\\d{1,6}$"))) return true
+        if (s.contains("مشاهدة") && s.any { it.isDigit() }) return true
+        if (s.length > 70 && (s.contains("مشاهدة") || s.contains("تحميل") || s.contains("موقع"))) return true
+        return false
     }
 
     private fun titleFromUrlFallback(url: String): String {
@@ -141,11 +132,8 @@ class Cima4UProvider : MainAPI() {
         if (path.isBlank()) return ""
         val slug = path.trim().trim('/').substringAfterLast('/')
         if (slug.isBlank()) return ""
-
         val decoded = runCatching { URLDecoder.decode(slug, "UTF-8") }.getOrDefault(slug)
         var t = decoded.replace('-', ' ').replace('_', ' ').trim()
-
-        // Remove common slug junk
         val junk = listOf(
             "مشاهدة", "تحميل", "فيلم", "مسلسل", "مترجم", "اون", "لاين",
             "موقع", "سيما", "فور", "يو", "Cima4u", "cima4u", "cfu",
@@ -154,53 +142,30 @@ class Cima4UProvider : MainAPI() {
         junk.forEach { j ->
             t = t.replace(Regex("\\b" + Regex.escape(j) + "\\b", RegexOption.IGNORE_CASE), " ")
         }
-
-        // Remove years + digits
         t = t.replace(Regex("\\b(19\\d{2}|20\\d{2})\\b"), " ")
         t = t.replace(Regex("\\b\\d+\\b"), " ")
-
         t = t.replace(Regex("\\s+"), " ").trim()
         return sanitizeTitle(t)
     }
 
-    /**
-     * The important one:
-     * - prefer real title from alt/title/h tags
-     * - remove SEO garbage
-     * - if digits/empty => fallback to slug
-     */
-    private fun cleanListingTitle(raw: String?, url: String): String {
-        var t = sanitizeTitle(raw ?: "")
-
-        // Remove common SEO tails
-        if (t.contains("حصريا") && t.length > 25) {
-            t = t.substringBefore("حصريا").trim()
-        }
-        // Remove repeated promo words that show up in card text
-        val promo = listOf(
-            "السينما للجميع", "مشاهدة وتحميل", "موقع سيما", "Cima4U", "cima4u",
-            "أحدث الافلام", "افلام", "مسلسلات", "اون لاين"
+    private fun cleanListingTitle(raw: String, url: String): String {
+        var t = raw.trim()
+        if (t.equals("cima4u", true) || t.equals("cima4 u", true) || t.equals(name, true)) return ""
+        val junk = listOf(
+            "حصريا", "مشاهدة", "تحميل", "اون لاين", "مترجم", "مدبلج",
+            "موقع", "بجودة", "HD", "WEB", "BluRay",
+            "السينما للجميع", "سيما فور يو"
         )
-        promo.forEach { p ->
-            t = t.replace(p, "", ignoreCase = true).trim()
+        junk.forEach { w ->
+            t = t.replace(w, "", ignoreCase = true).trim()
         }
-
-        t = t.replace(Regex("\\s+"), " ").trim()
-
-        // Kill numeric titles
-        if (t.matches(Regex("^\\d{1,6}$"))) t = ""
-
-        // If still too SEO-ish and long, discard and fallback
-        if (t.length > 80 && (t.contains("مشاهدة") || t.contains("تحميل") || t.contains("موقع"))) {
-            t = ""
-        }
-
-        if (t.isBlank()) t = titleFromUrlFallback(url)
-        return t
+        t = t.replace(Regex("""\s+"""), " ").trim()
+        if (t.matches(Regex("""^\d+$"""))) return ""
+        if (t.equals("cima4u", true) || t.equals(name, true)) return ""
+        return sanitizeTitle(t)
     }
 
     private fun Element.extractPosterFromCard(): String? {
-        // background-image
         val bgEl = this.selectFirst("[style*=background-image]") ?: this
         val style = bgEl.attr("style")
         if (style.contains("background-image")) {
@@ -208,7 +173,6 @@ class Cima4UProvider : MainAPI() {
             val raw = m?.groupValues?.getOrNull(2)?.trim()
             if (!raw.isNullOrBlank() && !raw.startsWith("data:")) return canonical(raw)
         }
-
         val img = this.selectFirst("img")
         if (img != null) {
             for (a in listOf("data-srcset", "srcset")) {
@@ -219,39 +183,34 @@ class Cima4UProvider : MainAPI() {
                 }
             }
             for (a in listOf("data-src", "data-original", "data-lazy-src", "data-image", "data-thumb", "data-poster", "src")) {
-                val v = img.attr(a).trim()
+                val v = img.absUrl(a).ifBlank { img.attr(a).trim() }
                 if (v.isNotBlank() && !v.startsWith("data:")) return canonical(v)
             }
         }
         return null
     }
 
-    private fun Element.extractTitleFromCard(url: String): String {
-        // Prefer headings inside card
-        val h = this.selectFirst("h1,h2,h3,h4,.title,.name,.post-title,.entry-title")?.text()?.trim()
-        val hClean = cleanListingTitle(h, url)
-        if (hClean.isNotBlank()) return hClean
+    private fun Element.extractTitleFromCard(): String? {
+        val selfA: Element? = if (this.tagName().equals("a", true)) this else null
+        val a = selfA ?: this.selectFirst("a[href]")
 
-        val a = this.selectFirst("a[href]")
+        val h = this.selectFirst("h1,h2,h3,h4,.title,.name,.post-title,.entry-title")?.text()?.trim()
+        if (!h.isNullOrBlank()) return h
+
         val at = a?.attr("title")?.trim()
-        val atClean = cleanListingTitle(at, url)
-        if (atClean.isNotBlank()) return atClean
+        if (!at.isNullOrBlank()) return at
 
         val img = this.selectFirst("img")
         val alt = img?.attr("alt")?.trim()
-        val altClean = cleanListingTitle(alt, url)
-        if (altClean.isNotBlank()) return altClean
+        if (!alt.isNullOrBlank()) return alt
 
         val itxt = img?.attr("title")?.trim()
-        val itxtClean = cleanListingTitle(itxt, url)
-        if (itxtClean.isNotBlank()) return itxtClean
+        if (!itxt.isNullOrBlank()) return itxt
 
         val txt = a?.text()?.trim()
-        val txtClean = cleanListingTitle(txt, url)
-        if (txtClean.isNotBlank()) return txtClean
+        if (!txt.isNullOrBlank()) return txt
 
-        // last fallback
-        return titleFromUrlFallback(url)
+        return null
     }
 
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
@@ -280,7 +239,6 @@ class Cima4UProvider : MainAPI() {
         "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/" to "مسلسلات أنمي"
     )
 
-    // ✅ THIS is required so sections are not empty
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data, headers = headersOf("$mainUrl/")).document
         val items = parseListing(doc)
@@ -288,194 +246,138 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Listing parser (robust)
+    // Listing parser
     // ---------------------------
-    private fun selectCardElements(doc: Document) =
-        doc.select(
-            "article, .post, .item, .Thumb--GridItem, .GridItem, .BlockItem, li.item, .Thumb, .post-block, .item-box, div.movie, div.series"
-        )
+    private val titleCache = LinkedHashMap<String, String?>()
 
-        private fun isBadTitle(t: String): Boolean {
-    val s = t.trim()
-    if (s.isBlank()) return true
-    // رقم فقط
-    if (s.matches(Regex("^\\d{1,6}$"))) return true
-    // يحتوي "مشاهدة" بشكل واضح أو شكل "518 مشاهدة"
-    if (s.contains("مشاهدة") && s.any { it.isDigit() }) return true
-    // نص SEO طويل
-    if (s.length > 70 && (s.contains("مشاهدة") || s.contains("تحميل") || s.contains("موقع"))) return true
-    return false
-}
-
-private val titleCache = LinkedHashMap<String, String?>()
-
-private suspend fun fetchOgTitleCached(detailsUrl: String): String? {
-    if (titleCache.containsKey(detailsUrl)) return titleCache[detailsUrl]
-    val result = withTimeoutOrNull(4500L) {
-        runCatching {
-            val d = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
-            val h1 = d.selectFirst("h1")?.text()?.trim().orEmpty()
-            val og = d.selectFirst("meta[property=og:title]")?.attr("content")?.trim().orEmpty()
-            val best = (h1.ifBlank { og }).trim()
-            best.takeIf { it.isNotBlank() }?.let { sanitizeTitle(it) }
-        }.getOrNull()
-    }
-    if (titleCache.size > 350) titleCache.remove(titleCache.keys.firstOrNull())
-    titleCache[detailsUrl] = result
-    return result
-}
-
-private fun Element.closestCard(): Element {
-    // جرب نطلع لفوق شوي لنلقط الكرت الحقيقي
-    return this.parents().firstOrNull { p ->
-        val cls = p.className().lowercase()
-        cls.contains("post") || cls.contains("item") || cls.contains("thumb") ||
-        cls.contains("grid") || cls.contains("card") || p.tagName() == "article" || p.tagName() == "li"
-    } ?: this
-}
-
-        
-private suspend fun parseListing(doc: Document): List<SearchResponse> {
-    val out = LinkedHashMap<String, SearchResponse>()
-    val ph = posterHeaders()
-
-    // أهم سيلكتور: الروابط اللي فيها صورة (غالباً هي كروت الأفلام)
-    val anchorsWithImg = doc.select("a[href]:has(img)")
-    var ogCount = 0
-    var titleFixCount = 0
-
-    for (a in anchorsWithImg) {
-        val href = a.attr("href").trim()
-        if (href.isBlank()) continue
-
-        val url = canonical(href)
-        if (!looksLikePostUrl(url)) continue
-
-        // خذ الكرت الحقيقي (مش بس الـ <a>)
-        val card = a.closestCard()
-
-        // بوستر: كل lazy attrs
-        var poster = card.extractPosterFromCard()
-
-        // عنوان: من alt/title/h داخل الكرت
-        var rawTitle =
-            card.selectFirst("h1,h2,h3,h4,.title,.name,.post-title,.entry-title")?.text()?.trim()
-                ?: a.attr("title").trim().ifBlank { "" }
-
-        if (rawTitle.isBlank()) {
-            val img = a.selectFirst("img")
-            rawTitle =
-                img?.attr("alt")?.trim().orEmpty()
-                    .ifBlank { img?.attr("title")?.trim().orEmpty() }
-                    .ifBlank { a.text().trim() }
+    private suspend fun fetchOgTitleCached(detailsUrl: String): String? {
+        if (titleCache.containsKey(detailsUrl)) return titleCache[detailsUrl]
+        val result = withTimeoutOrNull(4500L) {
+            runCatching {
+                val d = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
+                val h1 = d.selectFirst("h1")?.text()?.trim().orEmpty()
+                val og = d.selectFirst("meta[property=og:title]")?.attr("content")?.trim().orEmpty()
+                val best = (h1.ifBlank { og }).trim()
+                best.takeIf { it.isNotBlank() }?.let { sanitizeTitle(it) }
+            }.getOrNull()
         }
-
-        var title = cleanListingTitle(rawTitle, url)
-
-        // ✅ إذا العنوان طلع رقم/مشاهدة/SEO → جيب عنوان حقيقي من صفحة التفاصيل (بعدد محدود)
-        if (isBadTitle(title) && titleFixCount < 14) {
-            titleFixCount++
-            val fixed = fetchOgTitleCached(url)
-            if (!fixed.isNullOrBlank()) title = fixed
-        }
-
-        // fallback أخير: من الـ slug
-        if (title.isBlank() || isBadTitle(title)) {
-            title = titleFromUrlFallback(url)
-        }
-        if (title.isBlank()) continue
-
-        // poster fallback: OG image لعدد محدود
-        if (poster.isNullOrBlank() && ogCount < 18) {
-            ogCount++
-            poster = fetchOgPosterCached(url)
-        }
-
-        val type = guessType(title, url)
-
-        val sr = newMovieSearchResponse(title, url, type) {
-            posterUrl = fixUrlNull(poster)
-
-            // ✅ IMPORTANT FIX: use the post URL as Referer so images are not grey
-            posterHeaders = mapOf(
-                "User-Agent" to USER_AGENT,
-                "Referer" to url
-            )
-        }
-
-        out.putIfAbsent(url, sr)
-        if (out.size >= 80) break
+        if (titleCache.size > 350) titleCache.remove(titleCache.keys.firstOrNull())
+        titleCache[detailsUrl] = result
+        return result
     }
 
-    // fallback إضافي: إذا الصفحة ما فيها img links (نادر)
-    if (out.isEmpty()) {
-        val anchors = doc.select("a[href]")
-        for (a in anchors) {
+    private fun Element.closestCard(): Element {
+        return this.parents().firstOrNull { p ->
+            val cls = p.className().lowercase()
+            cls.contains("post") || cls.contains("item") || cls.contains("thumb") ||
+                cls.contains("grid") || cls.contains("card") || p.tagName() == "article" || p.tagName() == "li"
+        } ?: this
+    }
+
+    private suspend fun parseListing(doc: Document): List<SearchResponse> {
+        val out = LinkedHashMap<String, SearchResponse>()
+        val ph = posterHeaders()
+
+        // Loop 1: Standard cards with images
+        val anchorsWithImg = doc.select("a[href]:has(img)")
+        var ogPosterCount = 0
+        var ogTitleCount = 0
+
+        for (a in anchorsWithImg) {
             val href = a.attr("href").trim()
             if (href.isBlank()) continue
-
             val url = canonical(href)
             if (!looksLikePostUrl(url)) continue
 
-            var title = cleanListingTitle(
-                a.attr("title").trim().ifBlank { a.text().trim() },
-                url
-            )
+            val card = a.closestCard()
+            var poster = card.extractPosterFromCard()
+            var title = card.extractTitleFromCard().orEmpty()
+            
+            title = cleanListingTitle(title, url)
 
-            if (isBadTitle(title)) {
+            if (isGarbageTitle(title) && ogTitleCount < 60) {
+                ogTitleCount++
                 val fixed = fetchOgTitleCached(url)
                 if (!fixed.isNullOrBlank()) title = fixed
             }
-            if (title.isBlank() || isBadTitle(title)) title = titleFromUrlFallback(url)
-            if (title.isBlank()) continue
 
-            val type = guessType(title, url)
+            if (isGarbageTitle(title)) {
+                title = titleFromUrlFallback(url)
+            }
+            if (isGarbageTitle(title)) continue
 
-            var poster: String? = null
-            if (ogCount < 14) {
-                ogCount++
+            if (poster.isNullOrBlank() && ogPosterCount < 25) {
+                ogPosterCount++
                 poster = fetchOgPosterCached(url)
             }
 
+            val type = guessType(title, url)
             val sr = newMovieSearchResponse(title, url, type) {
                 posterUrl = fixUrlNull(poster)
-
-                // ✅ IMPORTANT FIX here too
-                posterHeaders = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to url
-                )
+                posterHeaders = ph
             }
-
             out.putIfAbsent(url, sr)
-            if (out.size >= 60) break
+            if (out.size >= 80) break
         }
+
+        // Loop 2: Fallback (Restored!)
+        if (out.isEmpty()) {
+            val anchors = doc.select("a[href]")
+            for (a in anchors) {
+                val href = a.attr("href").trim()
+                if (href.isBlank()) continue
+                val url = canonical(href)
+                if (!looksLikePostUrl(url)) continue
+
+                var title = cleanListingTitle(
+                    a.attr("title").trim().ifBlank { a.text().trim() },
+                    url
+                )
+
+                if (isGarbageTitle(title) && ogTitleCount < 60) {
+                    ogTitleCount++
+                    val fixed = fetchOgTitleCached(url)
+                    if (!fixed.isNullOrBlank()) title = fixed
+                }
+
+                if (isGarbageTitle(title)) {
+                    title = titleFromUrlFallback(url)
+                }
+                if (isGarbageTitle(title)) continue
+
+                val type = guessType(title, url)
+                var poster: String? = null
+                if (ogPosterCount < 20) {
+                    ogPosterCount++
+                    poster = fetchOgPosterCached(url)
+                }
+
+                val sr = newMovieSearchResponse(title, url, type) {
+                    posterUrl = fixUrlNull(poster)
+                    posterHeaders = ph
+                }
+                out.putIfAbsent(url, sr)
+                if (out.size >= 60) break
+            }
+        }
+
+        return out.values.toList()
     }
 
-    return out.values.toList()
-}
-
-    // ---------------------------
-    // Search
-    // ---------------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
-
         val enc = URLEncoder.encode(q, "UTF-8")
-
         val urls = listOf(
             "$mainUrl/?s=$enc",
             "$mainUrl/search/$enc"
         )
-
         for (u in urls) {
             val doc = runCatching { app.get(u, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: continue
             val parsed = parseListing(doc)
             val filtered = parsed.filter { it.name.contains(q, ignoreCase = true) }.take(MAX_SEARCH_RESULTS)
             if (filtered.isNotEmpty()) return filtered
         }
-
         return crawlSearchFallback(q)
     }
 
@@ -485,7 +387,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
             "$mainUrl/category/movies/",
             "$mainUrl/category/series/"
         )
-
         for (section in sections) {
             var p = 1
             while (p <= MAX_CRAWL_PAGES && out.size < MAX_SEARCH_RESULTS) {
@@ -493,7 +394,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
                 val doc = runCatching { app.get(pageUrl, headers = headersOf("$mainUrl/")).document }.getOrNull() ?: break
                 val items = parseListing(doc)
                 if (items.isEmpty()) break
-
                 for (it in items) {
                     if (it.name.contains(q, ignoreCase = true)) out.putIfAbsent(it.url, it)
                     if (out.size >= MAX_SEARCH_RESULTS) break
@@ -504,9 +404,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
         return out.values.toList()
     }
 
-    // ---------------------------
-    // Load (details)
-    // ---------------------------
     override suspend fun load(url: String): LoadResponse {
         val pageUrl = canonical(url)
         val doc = app.get(pageUrl, headers = headersOf("$mainUrl/")).document
@@ -549,7 +446,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
         select("a[href]").forEach { a ->
             val href = a.attr("href").trim()
             if (href.isBlank()) return@forEach
-
             val link = canonical(href)
             if (!isInternalUrl(link)) return@forEach
             if (link == seriesUrl) return@forEach
@@ -561,16 +457,13 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
                     decodedPath(link).contains("الحلقة")
 
             if (!looksEpisode) return@forEach
-
             val epNum = epRegex.find(txt)?.groupValues?.getOrNull(1)?.toIntOrNull()
-
             found.putIfAbsent(link, newEpisode(link) {
                 name = if (epNum != null) "الحلقة $epNum" else txt.ifBlank { "مشاهدة" }
                 season = 1
                 episode = epNum
             })
         }
-
         if (found.isEmpty()) {
             return listOf(newEpisode(seriesUrl) {
                 name = "مشاهدة"
@@ -578,30 +471,23 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
                 episode = 1
             })
         }
-
         return found.values.toList().sortedBy { it.episode ?: 999999 }
     }
 
-    // ---------------------------
-    // Link discovery
-    // ---------------------------
     private fun Document.findWatchUrl(detailsUrl: String): String? {
         val a = selectFirst("a:contains(مشاهدة الآن), a[href*=/watch], a[href*=watch]")
         val href = a?.attr("href")?.trim().orEmpty()
         if (href.isNotBlank()) return canonical(href)
-
         val clean = if (detailsUrl.endsWith("/")) detailsUrl else "$detailsUrl/"
         return "${clean}watch/"
     }
 
     private fun Document.extractServerCandidates(): List<String> {
         val out = LinkedHashSet<String>()
-
         select("a[href]").forEach { a ->
             val href = a.absUrl("href").ifBlank { a.attr("href").trim() }
             if (href.isBlank()) return@forEach
             val u = href.substringBefore("#").trim()
-
             val low = u.lowercase()
             val looksUseful =
                 low.contains("dood") ||
@@ -614,15 +500,12 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
                     low.contains("player") ||
                     low.contains("m3u8") ||
                     low.contains(".mp4")
-
             if (looksUseful) out.add(u)
         }
-
         select("[data-watch]").forEach {
             val v = it.attr("data-watch").trim()
             if (v.isNotBlank()) out.add(canonical(v))
         }
-
         val attrs = listOf("data-url", "data-href", "data-embed", "data-src", "data-link", "data-iframe")
         for (a in attrs) {
             select("[$a]").forEach { el ->
@@ -630,25 +513,21 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
                 if (v.isNotBlank()) out.add(canonical(v))
             }
         }
-
         select("iframe[src]").forEach {
             val v = it.attr("src").trim()
             if (v.isNotBlank()) out.add(canonical(v))
         }
-
         select("[onclick]").forEach { el ->
             val oc = el.attr("onclick")
             val m = Regex("""https?://[^"'\s<>]+""").find(oc)
             if (m != null) out.add(m.value.substringBefore("#").trim())
         }
-
         return out.toList()
     }
 
     private suspend fun resolveInternalOnce(url: String, referer: String): List<String> {
         val fixed = canonical(url)
         if (fixed.isBlank()) return emptyList()
-
         return withTimeoutOrNull(PER_REQ_TIMEOUT_MS) {
             runCatching {
                 val doc = app.get(fixed, headers = headersOf(referer)).document
@@ -661,7 +540,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
         val low = url.lowercase()
         val isM3u8 = low.contains(".m3u8")
         val type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-
         callback(
             newExtractorLink(
                 source = name,
@@ -684,17 +562,13 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
     ): Boolean {
         val detailsUrl = canonical(data)
         if (detailsUrl.isBlank()) return false
-
         val detailsDoc = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
         val watchUrl = detailsDoc.findWatchUrl(detailsUrl) ?: return false
-
         val watchDoc = app.get(watchUrl, headers = headersOf(detailsUrl)).document
 
         val candidates = LinkedHashSet<String>()
         watchDoc.extractServerCandidates().forEach { candidates.add(it) }
-
         if (candidates.isEmpty()) return false
-
         val expanded = LinkedHashSet<String>()
         expanded.addAll(candidates)
 
@@ -703,7 +577,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
             if (internalUsed >= MAX_INTERNAL_RESOLVE) break
             val u = canonical(c)
             if (u.isBlank()) continue
-
             if (isInternalUrl(u)) {
                 val more = resolveInternalOnce(u, watchUrl)
                 more.forEach { expanded.add(it) }
@@ -713,20 +586,16 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
 
         val finals = expanded.toList().take(MAX_FINAL_LINKS)
         if (finals.isEmpty()) return false
-
         var foundAny = false
-
         for (raw in finals) {
             val u = canonical(raw)
             if (u.isBlank()) continue
             val low = u.lowercase()
-
             if (low.contains(".mp4") || low.contains(".m3u8")) {
                 emitDirect(u, watchUrl, callback)
                 foundAny = true
                 continue
             }
-
             if (!isInternalUrl(u)) {
                 runCatching {
                     loadExtractor(u, watchUrl, subtitleCallback, callback)
@@ -734,7 +603,6 @@ private suspend fun parseListing(doc: Document): List<SearchResponse> {
                 }
             }
         }
-
         return foundAny
     }
 }
