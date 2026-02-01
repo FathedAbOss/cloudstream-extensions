@@ -295,78 +295,165 @@ class Cima4UProvider : MainAPI() {
             "article, .post, .item, .Thumb--GridItem, .GridItem, .BlockItem, li.item, .Thumb, .post-block, .item-box, div.movie, div.series"
         )
 
-    private suspend fun parseListing(doc: Document): List<SearchResponse> {
-        val out = LinkedHashMap<String, SearchResponse>()
-        val ph = posterHeaders()
+        private fun isBadTitle(t: String): Boolean {
+    val s = t.trim()
+    if (s.isBlank()) return true
+    // رقم فقط
+    if (s.matches(Regex("^\\d{1,6}$"))) return true
+    // يحتوي "مشاهدة" بشكل واضح أو شكل "518 مشاهدة"
+    if (s.contains("مشاهدة") && s.any { it.isDigit() }) return true
+    // نص SEO طويل
+    if (s.length > 70 && (s.contains("مشاهدة") || s.contains("تحميل") || s.contains("موقع"))) return true
+    return false
+}
 
-        val cards = selectCardElements(doc)
-        var ogCount = 0
+private val titleCache = LinkedHashMap<String, String?>()
 
-        // 1) Card-based parse (best)
-        for (card in cards) {
-            val a = card.selectFirst("a[href]") ?: continue
+private suspend fun fetchOgTitleCached(detailsUrl: String): String? {
+    if (titleCache.containsKey(detailsUrl)) return titleCache[detailsUrl]
+    val result = withTimeoutOrNull(4500L) {
+        runCatching {
+            val d = app.get(detailsUrl, headers = headersOf("$mainUrl/")).document
+            val h1 = d.selectFirst("h1")?.text()?.trim().orEmpty()
+            val og = d.selectFirst("meta[property=og:title]")?.attr("content")?.trim().orEmpty()
+            val best = (h1.ifBlank { og }).trim()
+            best.takeIf { it.isNotBlank() }?.let { sanitizeTitle(it) }
+        }.getOrNull()
+    }
+    if (titleCache.size > 350) titleCache.remove(titleCache.keys.firstOrNull())
+    titleCache[detailsUrl] = result
+    return result
+}
+
+private fun Element.closestCard(): Element {
+    // جرب نطلع لفوق شوي لنلقط الكرت الحقيقي
+    return this.parents().firstOrNull { p ->
+        val cls = p.className().lowercase()
+        cls.contains("post") || cls.contains("item") || cls.contains("thumb") ||
+        cls.contains("grid") || cls.contains("card") || p.tagName() == "article" || p.tagName() == "li"
+    } ?: this
+}
+
+        
+private suspend fun parseListing(doc: Document): List<SearchResponse> {
+    val out = LinkedHashMap<String, SearchResponse>()
+    val ph = posterHeaders()
+
+    // أهم سيلكتور: الروابط اللي فيها صورة (غالباً هي كروت الأفلام)
+    val anchorsWithImg = doc.select("a[href]:has(img)")
+    var ogCount = 0
+    var titleFixCount = 0
+
+    for (a in anchorsWithImg) {
+        val href = a.attr("href").trim()
+        if (href.isBlank()) continue
+
+        val url = canonical(href)
+        if (!looksLikePostUrl(url)) continue
+
+        // خذ الكرت الحقيقي (مش بس الـ <a>)
+        val card = a.closestCard()
+
+        // بوستر: كل lazy attrs
+        var poster = card.extractPosterFromCard()
+
+        // عنوان: من alt/title/h داخل الكرت
+        var rawTitle =
+            card.selectFirst("h1,h2,h3,h4,.title,.name,.post-title,.entry-title")?.text()?.trim()
+                ?: a.attr("title").trim().ifBlank { "" }
+
+        if (rawTitle.isBlank()) {
+            val img = a.selectFirst("img")
+            rawTitle =
+                img?.attr("alt")?.trim().orEmpty()
+                    .ifBlank { img?.attr("title")?.trim().orEmpty() }
+                    .ifBlank { a.text().trim() }
+        }
+
+        var title = cleanListingTitle(rawTitle, url)
+
+        // ✅ إذا العنوان طلع رقم/مشاهدة/SEO → جيب عنوان حقيقي من صفحة التفاصيل (بعدد محدود)
+        if (isBadTitle(title) && titleFixCount < 14) {
+            titleFixCount++
+            val fixed = fetchOgTitleCached(url)
+            if (!fixed.isNullOrBlank()) title = fixed
+        }
+
+        // fallback أخير: من الـ slug
+        if (title.isBlank() || isBadTitle(title)) {
+            title = titleFromUrlFallback(url)
+        }
+        if (title.isBlank()) continue
+
+        // poster fallback: OG image لعدد محدود
+        if (poster.isNullOrBlank() && ogCount < 18) {
+            ogCount++
+            poster = fetchOgPosterCached(url)
+        }
+
+        val type = guessType(title, url)
+
+        val sr = newMovieSearchResponse(title, url, type) {
+            posterUrl = fixUrlNull(poster)
+
+            // ✅ IMPORTANT FIX: use the post URL as Referer so images are not grey
+            posterHeaders = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to url
+            )
+        }
+
+        out.putIfAbsent(url, sr)
+        if (out.size >= 80) break
+    }
+
+    // fallback إضافي: إذا الصفحة ما فيها img links (نادر)
+    if (out.isEmpty()) {
+        val anchors = doc.select("a[href]")
+        for (a in anchors) {
             val href = a.attr("href").trim()
             if (href.isBlank()) continue
 
             val url = canonical(href)
             if (!looksLikePostUrl(url)) continue
 
-            val title = card.extractTitleFromCard(url)
+            var title = cleanListingTitle(
+                a.attr("title").trim().ifBlank { a.text().trim() },
+                url
+            )
+
+            if (isBadTitle(title)) {
+                val fixed = fetchOgTitleCached(url)
+                if (!fixed.isNullOrBlank()) title = fixed
+            }
+            if (title.isBlank() || isBadTitle(title)) title = titleFromUrlFallback(url)
             if (title.isBlank()) continue
 
-            var poster = card.extractPosterFromCard()
-            if (poster.isNullOrBlank() && ogCount < 18) {
+            val type = guessType(title, url)
+
+            var poster: String? = null
+            if (ogCount < 14) {
                 ogCount++
                 poster = fetchOgPosterCached(url)
             }
 
-            val type = guessType(title, url)
-
             val sr = newMovieSearchResponse(title, url, type) {
                 posterUrl = fixUrlNull(poster)
-                posterHeaders = ph
+
+                // ✅ IMPORTANT FIX here too
+                posterHeaders = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to url
+                )
             }
 
             out.putIfAbsent(url, sr)
-            if (out.size >= 80) break
+            if (out.size >= 60) break
         }
-
-        // 2) Fallback if the page structure changes (safe anchor scan)
-        if (out.isEmpty()) {
-            val anchors = doc.select("a[href]")
-            for (a in anchors) {
-                val href = a.attr("href").trim()
-                if (href.isBlank()) continue
-
-                val url = canonical(href)
-                if (!looksLikePostUrl(url)) continue
-
-                // prefer img alt/title first
-                val img = a.selectFirst("img")
-                val rawTitle =
-                    img?.attr("alt")?.trim()
-                        .orEmpty()
-                        .ifBlank { img?.attr("title")?.trim().orEmpty() }
-                        .ifBlank { a.attr("title").trim() }
-                        .ifBlank { a.text().trim() }
-
-                val title = cleanListingTitle(rawTitle, url)
-                if (title.isBlank()) continue
-
-                val type = guessType(title, url)
-
-                val sr = newMovieSearchResponse(title, url, type) {
-                    posterUrl = null
-                    posterHeaders = ph
-                }
-
-                out.putIfAbsent(url, sr)
-                if (out.size >= 60) break
-            }
-        }
-
-        return out.values.toList()
     }
+
+    return out.values.toList()
+}
 
     // ---------------------------
     // Search
