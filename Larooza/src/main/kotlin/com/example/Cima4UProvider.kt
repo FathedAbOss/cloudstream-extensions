@@ -59,6 +59,12 @@ class Cima4UProvider : MainAPI() {
         return fixUrl(u).substringBefore("#").trim()
     }
 
+    private fun decodedPath(url: String): String {
+        val path = runCatching { URI(url).path ?: "" }.getOrDefault("")
+        if (path.isBlank()) return ""
+        return runCatching { URLDecoder.decode(path, "UTF-8") }.getOrDefault(path)
+    }
+
     private fun isInternalUrl(u: String): Boolean {
         if (!u.startsWith("http")) return true
         val host = runCatching { URI(u).host?.lowercase().orEmpty() }.getOrDefault("")
@@ -68,30 +74,33 @@ class Cima4UProvider : MainAPI() {
 
     private fun isListingUrl(u: String): Boolean {
         val low = u.lowercase()
+        if (!isInternalUrl(u)) return false
         return low.contains("/category/") ||
             low.contains("/tag/") ||
             low.contains("/page/") ||
             low.contains("/wp-admin") ||
             low.contains("/wp-content") ||
-            low.endsWith("/") && (low == mainUrl.lowercase() + "/")
+            (low == (mainUrl.trimEnd('/') + "/").lowercase())
     }
 
     /**
-     * CFU posts usually have Arabic "مشاهدة" slug (often urlencoded).
-     * We treat these as real media posts (movie/series/episode pages).
+     * Determine if URL looks like a media post page (movie/series/episode/watch),
+     * not a category/tag/page listing.
      */
     private fun looksLikePostUrl(u: String): Boolean {
-        val low = u.lowercase()
         if (!isInternalUrl(u)) return false
         if (isListingUrl(u)) return false
-        return low.contains("%d9%85%d8%b4%d8%a7%d9%87%d8%af%d8%a9") || // مشاهدة
-            low.contains("/مشاهدة") ||
-            low.contains("/watch") ||
+
+        val low = u.lowercase()
+        val pathDecoded = decodedPath(u)
+
+        return low.contains("/watch") ||
             low.contains("/movie") ||
             low.contains("/series") ||
             low.contains("/show") ||
             low.contains("episode") ||
-            low.contains("الحلقة")
+            pathDecoded.contains("مشاهدة") ||
+            pathDecoded.contains("الحلقة")
     }
 
     private fun guessType(title: String, url: String): TvType {
@@ -107,7 +116,7 @@ class Cima4UProvider : MainAPI() {
     private fun sanitizeTitle(raw: String): String {
         var t = raw.trim()
 
-        // Remove extremely noisy separators (keep the first meaningful chunk)
+        // Cut at common separators (keep the first meaningful chunk)
         listOf("|", " - ", " — ", " – ").forEach { sep ->
             if (t.contains(sep)) t = t.substringBefore(sep).trim()
         }
@@ -117,15 +126,11 @@ class Cima4UProvider : MainAPI() {
 
         // Reject pure numbers or very short junk
         if (t.matches(Regex("^\\d{1,6}$"))) return ""
-        if (t.length < 3) return ""
+        if (t.length < 2) return ""
 
-        // If the title is still huge and SEO-like, keep only the first 80 chars before repeating keywords
-        if (t.length > 120) {
-            // Try cut before common SEO repeats
-            val cutKeywords = listOf("مشاهدة", "تحميل", "موقع", "حصريا", "أحدث", "اون لاين", "افلام", "مسلسلات", "Cima", "cima", "cfu")
-            val idx = cutKeywords.map { k -> t.indexOf(k, startIndex = 10) }.filter { it >= 0 }.minOrNull()
-            if (idx != null && idx in 10..120) t = t.substring(0, idx).trim()
-            if (t.length > 120) t = t.take(120).trim()
+        // If super long SEO-ish text, shrink hard
+        if (t.length > 140 && (t.contains("مشاهدة") || t.contains("تحميل") || t.contains("موقع"))) {
+            t = t.take(120).trim()
         }
 
         return t
@@ -140,21 +145,58 @@ class Cima4UProvider : MainAPI() {
         val decoded = runCatching { URLDecoder.decode(slug, "UTF-8") }.getOrDefault(slug)
         var t = decoded.replace('-', ' ').replace('_', ' ').trim()
 
-        // Remove common CFU slug junk
+        // Remove common slug junk
         val junk = listOf(
-            "مشاهدة", "تحميل", "فيلم", "مسلسل", "مترجم", "اون لاين", "بجودة", "جودة", "HD", "WEB", "BluRay",
-            "موقع", "سيما", "فور", "يو", "Cima4u", "cima4u", "cfu", "الاصلي", "حصريا", "الجميع", "السينما"
+            "مشاهدة", "تحميل", "فيلم", "مسلسل", "مترجم", "اون", "لاين",
+            "موقع", "سيما", "فور", "يو", "Cima4u", "cima4u", "cfu",
+            "الاصلي", "حصريا", "الجميع", "السينما", "بجودة", "عالية"
         )
         junk.forEach { j ->
             t = t.replace(Regex("\\b" + Regex.escape(j) + "\\b", RegexOption.IGNORE_CASE), " ")
         }
 
-        // Remove years and stray digits
+        // Remove years + digits
         t = t.replace(Regex("\\b(19\\d{2}|20\\d{2})\\b"), " ")
         t = t.replace(Regex("\\b\\d+\\b"), " ")
 
         t = t.replace(Regex("\\s+"), " ").trim()
         return sanitizeTitle(t)
+    }
+
+    /**
+     * The important one:
+     * - prefer real title from alt/title/h tags
+     * - remove SEO garbage
+     * - if digits/empty => fallback to slug
+     */
+    private fun cleanListingTitle(raw: String?, url: String): String {
+        var t = sanitizeTitle(raw ?: "")
+
+        // Remove common SEO tails
+        if (t.contains("حصريا") && t.length > 25) {
+            t = t.substringBefore("حصريا").trim()
+        }
+        // Remove repeated promo words that show up in card text
+        val promo = listOf(
+            "السينما للجميع", "مشاهدة وتحميل", "موقع سيما", "Cima4U", "cima4u",
+            "أحدث الافلام", "افلام", "مسلسلات", "اون لاين"
+        )
+        promo.forEach { p ->
+            t = t.replace(p, "", ignoreCase = true).trim()
+        }
+
+        t = t.replace(Regex("\\s+"), " ").trim()
+
+        // Kill numeric titles
+        if (t.matches(Regex("^\\d{1,6}$"))) t = ""
+
+        // If still too SEO-ish and long, discard and fallback
+        if (t.length > 80 && (t.contains("مشاهدة") || t.contains("تحميل") || t.contains("موقع"))) {
+            t = ""
+        }
+
+        if (t.isBlank()) t = titleFromUrlFallback(url)
+        return t
     }
 
     private fun Element.extractPosterFromCard(): String? {
@@ -169,7 +211,6 @@ class Cima4UProvider : MainAPI() {
 
         val img = this.selectFirst("img")
         if (img != null) {
-            // srcset / data-srcset
             for (a in listOf("data-srcset", "srcset")) {
                 val v = img.attr(a).trim()
                 if (v.isNotBlank()) {
@@ -177,7 +218,6 @@ class Cima4UProvider : MainAPI() {
                     if (!first.isNullOrBlank() && !first.startsWith("data:")) return canonical(first)
                 }
             }
-            // common lazy attributes
             for (a in listOf("data-src", "data-original", "data-lazy-src", "data-image", "data-thumb", "data-poster", "src")) {
                 val v = img.attr(a).trim()
                 if (v.isNotBlank() && !v.startsWith("data:")) return canonical(v)
@@ -186,29 +226,32 @@ class Cima4UProvider : MainAPI() {
         return null
     }
 
-    private fun Element.extractTitleFromCard(): String? {
-        // Prefer explicit headings inside a card
+    private fun Element.extractTitleFromCard(url: String): String {
+        // Prefer headings inside card
         val h = this.selectFirst("h1,h2,h3,h4,.title,.name,.post-title,.entry-title")?.text()?.trim()
-        val sh = if (!h.isNullOrBlank()) sanitizeTitle(h) else ""
-        if (sh.isNotBlank()) return sh
+        val hClean = cleanListingTitle(h, url)
+        if (hClean.isNotBlank()) return hClean
 
-        // Prefer anchor title attribute
         val a = this.selectFirst("a[href]")
-        val at = a?.attr("title")?.trim().orEmpty()
-        val sat = if (at.isNotBlank()) sanitizeTitle(at) else ""
-        if (sat.isNotBlank()) return sat
+        val at = a?.attr("title")?.trim()
+        val atClean = cleanListingTitle(at, url)
+        if (atClean.isNotBlank()) return atClean
 
-        // Prefer img alt
-        val alt = this.selectFirst("img[alt]")?.attr("alt")?.trim().orEmpty()
-        val salt = if (alt.isNotBlank()) sanitizeTitle(alt) else ""
-        if (salt.isNotBlank()) return salt
+        val img = this.selectFirst("img")
+        val alt = img?.attr("alt")?.trim()
+        val altClean = cleanListingTitle(alt, url)
+        if (altClean.isNotBlank()) return altClean
 
-        // Last resort: anchor text (often noisy)
-        val txt = a?.text()?.trim().orEmpty()
-        val stxt = if (txt.isNotBlank()) sanitizeTitle(txt) else ""
-        if (stxt.isNotBlank()) return stxt
+        val itxt = img?.attr("title")?.trim()
+        val itxtClean = cleanListingTitle(itxt, url)
+        if (itxtClean.isNotBlank()) return itxtClean
 
-        return null
+        val txt = a?.text()?.trim()
+        val txtClean = cleanListingTitle(txt, url)
+        if (txtClean.isNotBlank()) return txtClean
+
+        // last fallback
+        return titleFromUrlFallback(url)
     }
 
     private suspend fun fetchOgPosterCached(detailsUrl: String): String? {
@@ -237,6 +280,7 @@ class Cima4UProvider : MainAPI() {
         "$mainUrl/category/%D9%85%D8%B3%D9%84%D8%B3%D9%84%D8%A7%D8%AA-%D8%A7%D9%86%D9%85%D9%8A/" to "مسلسلات أنمي"
     )
 
+    // ✅ THIS is required so sections are not empty
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get(request.data, headers = headersOf("$mainUrl/")).document
         val items = parseListing(doc)
@@ -244,15 +288,11 @@ class Cima4UProvider : MainAPI() {
     }
 
     // ---------------------------
-    // Listing parser (FIXED: card-based, not all anchors)
+    // Listing parser (robust)
     // ---------------------------
     private fun selectCardElements(doc: Document) =
         doc.select(
-            "article, " +
-                "div.post, div.post-item, div.post-box, div.post-block, " +
-                "div.entry, div.entry-content, div.blog-item, " +
-                "div.Thumb--GridItem, div.GridItem, div.BlockItem, " +
-                "div.item, li.item, .Thumb, .item-box, .post-card"
+            "article, .post, .item, .Thumb--GridItem, .GridItem, .BlockItem, li.item, .Thumb, .post-block, .item-box, div.movie, div.series"
         )
 
     private suspend fun parseListing(doc: Document): List<SearchResponse> {
@@ -262,8 +302,8 @@ class Cima4UProvider : MainAPI() {
         val cards = selectCardElements(doc)
         var ogCount = 0
 
+        // 1) Card-based parse (best)
         for (card in cards) {
-            // Find a meaningful link in the card
             val a = card.selectFirst("a[href]") ?: continue
             val href = a.attr("href").trim()
             if (href.isBlank()) continue
@@ -271,16 +311,9 @@ class Cima4UProvider : MainAPI() {
             val url = canonical(href)
             if (!looksLikePostUrl(url)) continue
 
-            // Extract title properly (avoid numbers / SEO)
-            var title = card.extractTitleFromCard().orEmpty()
-
-            // If title still bad, fallback to URL slug
-            if (title.isBlank() || title.matches(Regex("^\\d{1,6}$")) || title.length < 3) {
-                title = titleFromUrlFallback(url)
-            }
+            val title = card.extractTitleFromCard(url)
             if (title.isBlank()) continue
 
-            // Poster: prefer card poster, then limited OG fallback
             var poster = card.extractPosterFromCard()
             if (poster.isNullOrBlank() && ogCount < 18) {
                 ogCount++
@@ -298,19 +331,26 @@ class Cima4UProvider : MainAPI() {
             if (out.size >= 80) break
         }
 
-        // Fallback: if the site renders cards differently on some pages, do a safe filtered anchor scan
+        // 2) Fallback if the page structure changes (safe anchor scan)
         if (out.isEmpty()) {
             val anchors = doc.select("a[href]")
             for (a in anchors) {
                 val href = a.attr("href").trim()
                 if (href.isBlank()) continue
+
                 val url = canonical(href)
                 if (!looksLikePostUrl(url)) continue
 
-                var title = sanitizeTitle(a.attr("title").ifBlank { a.text() })
-                if (title.isBlank() || title.matches(Regex("^\\d{1,6}$"))) {
-                    title = titleFromUrlFallback(url)
-                }
+                // prefer img alt/title first
+                val img = a.selectFirst("img")
+                val rawTitle =
+                    img?.attr("alt")?.trim()
+                        .orEmpty()
+                        .ifBlank { img?.attr("title")?.trim().orEmpty() }
+                        .ifBlank { a.attr("title").trim() }
+                        .ifBlank { a.text().trim() }
+
+                val title = cleanListingTitle(rawTitle, url)
                 if (title.isBlank()) continue
 
                 val type = guessType(title, url)
@@ -431,7 +471,7 @@ class Cima4UProvider : MainAPI() {
             val looksEpisode =
                 txt.contains("الحلقة") ||
                     link.contains("episode", true) ||
-                    link.contains("الحلقة", true)
+                    decodedPath(link).contains("الحلقة")
 
             if (!looksEpisode) return@forEach
 
@@ -530,11 +570,6 @@ class Cima4UProvider : MainAPI() {
         } ?: emptyList()
     }
 
-    /**
-     * newExtractorLink usage:
-     * - (source, name, url, type)
-     * - set referer/quality/headers inside initializer
-     */
     private suspend fun emitDirect(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         val low = url.lowercase()
         val isM3u8 = low.contains(".m3u8")
